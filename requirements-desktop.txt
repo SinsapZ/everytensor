@@ -1,0 +1,2 @@
+# Qt Quick renderer, controls, native dialogs and Qt Test. No web runtime needed.
+PySide6-Essentials==6.12.0

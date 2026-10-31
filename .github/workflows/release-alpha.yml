@@ -1,0 +1,73 @@
+name: Publish v0.1.0-alpha.1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release-alpha.yml
+      - release/everytensor-0.1.0-alpha.1-source.zip
+      - release/everytensor-0.1.0-alpha.1-source.zip.sha256
+      - release/release-notes.md
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-v0.1.0-alpha.1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify prepared source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum --check everytensor-0.1.0-alpha.1-source.zip.sha256)
+          python3 - <<'PY'
+          import pathlib
+          import zipfile
+
+          root = pathlib.Path.cwd()
+          forbidden = {'.everytensor', '.venv', 'models', '.git', '__pycache__'}
+          with zipfile.ZipFile('release/everytensor-0.1.0-alpha.1-source.zip') as archive:
+              assert archive.testzip() is None, 'Invalid ZIP checksum'
+              for entry in archive.infolist():
+                  path = pathlib.PurePosixPath(entry.filename)
+                  assert not path.is_absolute() and '..' not in path.parts, path
+                  assert not forbidden.intersection(path.parts), path
+                  assert path.parts[0] == 'everytensor-0.1.0-alpha.1', path
+                  if not entry.is_dir():
+                      local = root.joinpath(*path.parts[1:])
+                      assert local.read_bytes() == archive.read(entry), path
+          print('Source archive matches the repository; excluded directories are absent.')
+          PY
+
+      - name: Publish prerelease with prepared assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag=v0.1.0-alpha.1
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; leaving it unchanged."
+            exit 0
+          fi
+          gh release create "$tag" \
+            release/everytensor-0.1.0-alpha.1-source.zip \
+            release/everytensor-0.1.0-alpha.1-source.zip.sha256 \
+            release/release-notes.md \
+            --target "$GITHUB_SHA" \
+            --title 'EveryTensor v0.1.0-alpha.1' \
+            --notes-file release/release-notes.md \
+            --prerelease --draft --latest=false
+          gh release edit "$tag" --draft=false --prerelease --latest=false

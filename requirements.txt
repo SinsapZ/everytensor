@@ -1,0 +1,6 @@
+# Desktop, previews, and exact vector search.
+-r requirements-desktop.txt
+Pillow>=10
+PyMuPDF>=1.24
+numpy>=1.26
+tokenizers>=0.21
