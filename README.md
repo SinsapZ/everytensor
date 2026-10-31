@@ -1,5 +1,7 @@
 # EveryTensor
 
+作者：**[sinsap](https://github.com/SinsapZ)**
+
 **简体中文** | [English](README.en.md) | [日本語](README.ja.md) | [Español](README.es.md)
 
 Windows 预览版 · v0.1.0-alpha.1
