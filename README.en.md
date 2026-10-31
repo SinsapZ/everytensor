@@ -4,7 +4,9 @@
 
 Windows preview · v0.1.0-alpha.1
 
-EveryTensor searches local files on Windows. Enter a file name, keywords, or a description to start a search.
+Every file is a vector.
+
+You do not need to remember file names. Vectors will help you find them.
 
 ## Search functions
 

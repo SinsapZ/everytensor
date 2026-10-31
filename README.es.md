@@ -4,7 +4,9 @@
 
 Versión preliminar para Windows · v0.1.0-alpha.1
 
-EveryTensor busca archivos locales en Windows. Escribe un nombre de archivo, palabras clave o una descripción para iniciar la búsqueda.
+Cada archivo es un vector.
+
+No necesitas recordar los nombres de los archivos. Los vectores te ayudan a encontrarlos.
 
 ## Funciones de búsqueda
 
