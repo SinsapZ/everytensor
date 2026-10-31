@@ -1,50 +1,63 @@
 # EveryTensor
 
-**Windows 早期预览版 · v0.1.0-alpha.1**
+**简体中文** | [English](README.en.md) | [日本語](README.ja.md) | [Español](README.es.md)
 
-用文件名或一句描述，查找本机的文档、代码、图片、视频和音频，并在预览中定位相关内容。
+Windows 预览版 · v0.1.0-alpha.1
 
-当前提供源码运行方式，适合愿意反馈问题的早期使用者。界面、检索质量和资源占用仍在迭代，暂未提供独立安装包，也未完成全新 Windows 环境的完整验收。
+EveryTensor 用于搜索 Windows 上的本地文件。输入文件名、关键词或一段描述，即可开始搜索。
 
-## 可以做什么
+## 搜索功能
 
-- 按文件名、路径和正文关键词搜索；支持中文。
-- 使用轻量多语言模型搜索文件提示和文字内容，完整模型提供多模态语义检索。
-- 预览 PDF、文字和媒体，保留页码、行号、工作表或媒体时间位置。
-- 支持 TXT、Markdown、常见代码、PDF、DOCX、PPTX、XLSX、EPUB，以及图片、视频和音频。
-- 在后台增量更新索引，支持暂停、恢复、搜索范围和排除目录。
+- 搜索文件名、路径和正文，支持中文关键词。
+- 用轻量文字模型按含义搜索文字内容。
+- 用完整模型按内容搜索图片、视频和音频。
+- 预览搜索结果。结果可包含页码、行号、工作表或音视频中的时间位置。
+- 在后台更新索引。可以在设置中暂停或恢复索引。
 
-首次索引需要时间。已经发现的文件可先按名称搜索；尚未分析的内容不保证能通过语义搜索找到。
+支持的文件类型包括 TXT、Markdown、代码、PDF、DOCX、PPTX、XLSX、EPUB、图片、视频和音频。
+
+索引记录文件信息，供搜索使用。应用发现文件后，就可以按名称搜索。按内容搜索前，应用需要先读取相应内容。
 
 ## 运行要求
 
-- 64 位 Windows；当前开发环境为 Windows + Python 3.11。
-- Python 3.11，安装时启用 “Add python.exe to PATH”。
+- 64 位 Windows。
+- Python 3.11。安装 Python 时勾选 “Add python.exe to PATH”。
 - 安装依赖和模型时需要网络连接。
-- 如需视频／音频功能，另行安装 [FFmpeg](https://ffmpeg.org/download.html)，确认 `ffmpeg`、`ffprobe` 和 `ffplay` 均可从终端运行。
-- 完整模型需要额外的下载空间、内存和推理时间；CUDA 为可选加速方式，不包含在源码包中。
 
-## 快速开始
+使用音视频功能前，请安装 [FFmpeg](https://ffmpeg.org/download.html)。确认 `ffmpeg`、`ffprobe` 和 `ffplay` 命令均可在终端中运行。
 
-将源码解压到可写目录，不要直接在 ZIP 内运行。
+## 安装与启动
 
-1. 双击 `setup-quick-model.cmd`。脚本会创建项目内的 `.venv`，安装桌面依赖并下载轻量文字模型。
-2. 安装完成后双击 `launch.cmd`。
-3. 打开设置，确认搜索范围、排除目录和索引预算，然后等待文件发现与内容分析。
+此预览版从源码运行。
 
-**首次启动默认搜索“这台电脑”下可访问的固定本地磁盘。** 如需缩小范围，请在设置里改为指定文件夹。默认索引预算为 8 GiB，模型文件另计。初次使用建议选择一个较小的资料目录。
+1. 下载[源码 ZIP](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.1/everytensor-0.1.0-alpha.1-source.zip)。
+2. 解压到你有写入权限的文件夹。
+3. 双击 `setup-quick-model.cmd`。
+4. 等待安装完成。
+5. 双击 `launch.cmd`。
+6. 按 `Ctrl+,` 打开设置。
+7. 选择要搜索的文件夹。初次使用可先选择一个较小的资料目录。
 
-只想先使用文件名／关键词检索与预览，可运行 `setup-desktop.cmd`，暂不下载语义模型。
+安装脚本会创建 `.venv`、安装依赖，并下载轻量文字模型。
 
-### 完整多模态模型（可选）
+**首次启动默认搜索所有可访问的固定本地磁盘。** 可以在设置中缩小搜索范围或排除文件夹。默认索引预算为 8 GiB，模型文件另占空间。
 
-关闭应用后运行 `setup-model.cmd`。脚本会创建环境、安装运行依赖、准备轻量模型、下载完整模型并校验配置，完成后重新打开 `launch.cmd`。
+### 其他安装方式
 
-完整模型为 [Google EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)。轻量模型来自 [static-similarity-mrl-multilingual-v1](https://huggingface.co/sentence-transformers/static-similarity-mrl-multilingual-v1)，安装时转换为本地 256 维 FP16 表示。二者的结果与覆盖量分开管理；完整模型有有效结果时接管排名。
+| 脚本 | 用途 |
+| --- | --- |
+| `setup-desktop.cmd` | 安装应用，不下载模型。可使用文件名搜索、关键词搜索和预览。 |
+| `setup-model.cmd` | 安装完整模型及其依赖，同时准备轻量文字模型。 |
 
-模型未准备好或可用内存不足时，已有的名称／关键词及轻量结果仍可使用。安装失败时保留终端报错，检查网络和 Python 环境后重试。下载依赖和模型不会上传待索引的资料。
+运行 `setup-model.cmd` 前，请先关闭 EveryTensor。安装完成后，用 `launch.cmd` 重新启动。
 
-### 终端启动
+轻量文字模型为 [static-similarity-mrl-multilingual-v1](https://huggingface.co/sentence-transformers/static-similarity-mrl-multilingual-v1)。完整模型为 [Google EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)，需要更多磁盘空间和内存。
+
+完整模型无法运行时，仍可使用已有的文件名、关键词和轻量文字模型结果。
+
+### 从终端启动
+
+在项目文件夹中打开终端，依次运行：
 
 ```powershell
 python -m venv .venv
@@ -53,21 +66,34 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m everytensor
 ```
 
-若双击后窗口立即关闭，在终端运行最后一条命令查看错误。
+如果双击启动后窗口立即关闭，在终端运行最后一条命令可查看错误。
 
-## 使用与数据
+## 按键与本地数据
 
-- `Ctrl K`／`Ctrl L`／`Ctrl F` 聚焦搜索；上下键选择，`Enter` 打开，`Esc` 清空；`Ctrl ,` 打开设置。
-- 搜索、内容提取和模型推理在本机执行，运行时模型加载使用离线模式。
-- 索引保存在项目内的 `.everytensor/`，含文件路径、提取文本、向量和配置；**索引也是个人资料，不要上传到公共仓库或附在公开反馈中。**
-- `models/` 保存下载的模型，`.venv/` 保存 Python 依赖。三者均不包含在源码发布包中。
-- 应用读取原始资料进行索引与预览，不改写原文件。外部打开后的操作由对应程序负责。
-- 日志可能包含路径和错误信息；反馈前请检查并隐去私人内容。
+| 按键 | 操作 |
+| --- | --- |
+| `Ctrl+K`、`Ctrl+L` 或 `Ctrl+F` | 移到搜索框 |
+| `↑`、`↓` | 选择结果 |
+| `Enter` | 打开结果 |
+| `Esc` | 清空搜索 |
+| `Ctrl+,` | 打开设置 |
+
+应用在本机读取文件、建立索引和运行模型。下载依赖和模型不会上传你的文件。应用不会改写原文件。
+
+以下文件夹位于项目目录中，不包含在源码 ZIP 内：
+
+| 文件夹 | 内容 |
+| --- | --- |
+| `.everytensor/` | 索引和设置，包括文件路径及提取的文字 |
+| `models/` | 下载的模型 |
+| `.venv/` | Python 运行环境和依赖 |
+
+索引可能包含个人资料，请勿公开上传。分享日志前，请删除其中的私人路径和内容。
 
 ## 许可证
 
 Copyright (C) 2026 EveryTensor contributors.
 
-EveryTensor 项目源码采用 **GNU Affero General Public License v3.0 only**（SPDX：`AGPL-3.0-only`），完整条款见 [LICENSE](LICENSE)。本软件不提供任何担保，具体以许可证为准。
+源码采用 **GNU Affero General Public License v3.0 only**（`AGPL-3.0-only`）。完整条款及免责声明见 [LICENSE](LICENSE)。
 
-第三方依赖和模型保留各自的许可证，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+第三方依赖和模型使用各自的许可证，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
