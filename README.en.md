@@ -4,7 +4,7 @@ By **[sinsap](https://github.com/SinsapZ)**
 
 [简体中文](README.md) | **English** | [日本語](README.ja.md) | [Español](README.es.md)
 
-Windows preview · v0.1.0-alpha.1
+Windows preview · main development version
 
 Every file is a vector.
 
@@ -32,9 +32,9 @@ For audio and video, install [FFmpeg](https://ffmpeg.org/download.html). Make su
 
 ## Install and start
 
-This preview runs from source.
+This preview runs from source. The steps below use the `main` branch with the latest changes. The published [v0.1.0-alpha.1 release](https://github.com/SinsapZ/everytensor/releases/tag/v0.1.0-alpha.1) retains its original contents and does not include later updates.
 
-1. Download the [source ZIP](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.1/everytensor-0.1.0-alpha.1-source.zip).
+1. Download the [latest source ZIP](https://github.com/SinsapZ/everytensor/archive/refs/heads/main.zip).
 2. Extract the ZIP to a folder where you have write permission.
 3. Run `setup-quick-model.cmd`.
 4. Wait for setup to finish.
@@ -78,7 +78,12 @@ If the app window closes at startup, run the last command in a terminal to see t
 | --- | --- |
 | `Ctrl+K`, `Ctrl+L`, or `Ctrl+F` | Move to the search box |
 | `↑`, `↓` | Select a result |
+| `↑` on the first result | Return to the search box |
+| `←`, `→` on a type tab | Switch file types |
 | `Enter` | Open the result |
+| `Shift+Enter` in the result list | Show in folder |
+| `Ctrl+C` in the result list | Copy the file path and matched location |
+| Right-click a result or press `Shift+F10` | Open the result menu |
 | `Esc` | Clear the search |
 | `Ctrl+,` | Open settings |
 

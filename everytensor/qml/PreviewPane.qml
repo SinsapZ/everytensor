@@ -1,9 +1,11 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Window
 
 Rectangle {
     id: panel
+    objectName: "previewPane"
     color: Theme.paper
     radius: 12
     border.color: Theme.line
@@ -14,6 +16,11 @@ Rectangle {
     readonly property bool isDocument: hasRow && row.kind === "document"
     readonly property bool isPdf: hasRow && String(row.name).toLowerCase().endsWith(".pdf")
     readonly property string path: hasRow ? String(row.path || row.fullPath || "") : ""
+    readonly property bool compactHeader: width < 700
+    onPathChanged: {
+        imageScroll.contentY = 0;
+        if(textScroll.contentItem) textScroll.contentItem.contentY = 0;
+    }
     readonly property bool requestLoading: preview.loading
     property bool showLoading: false
     onRequestLoadingChanged: {
@@ -35,26 +42,31 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
         Item {
+            objectName: "previewHeader"
             Layout.fillWidth: true
-            Layout.preferredHeight: panel.height < 480 ? 76 : 88
+            Layout.preferredHeight: panel.compactHeader ? 124 : 88
             visible: panel.hasRow
             Column {
+                id: fileHeading
                 anchors.left: parent.left; anchors.leftMargin: 22
-                anchors.right: actions.left; anchors.rightMargin: 18
-                anchors.verticalCenter: parent.verticalCenter
+                anchors.right: panel.compactHeader ? parent.right : actions.left; anchors.rightMargin: 22
+                y: panel.compactHeader ? 17 : (parent.height - height) / 2
                 spacing: 6
-                Text { width: parent.width; text: panel.hasRow ? panel.row.name : ""; color: Theme.ink; font.family: Theme.family; font.pixelSize: 16; font.weight: Font.DemiBold; elide: Text.ElideMiddle }
-                Text { width: parent.width; text: panel.hasRow && panel.row.parentPath ? panel.row.parentPath : panel.path.replace(/[^\\/]+$/, "").replace(/[\\/]$/, ""); color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12; elide: Text.ElideMiddle }
+                Text { objectName: "previewTitle"; width: parent.width; text: panel.hasRow ? panel.row.name : ""; color: Theme.ink; font.family: Theme.family; font.pixelSize: 16; font.weight: Font.DemiBold; elide: Text.ElideMiddle }
+                Text { objectName: "previewPath"; width: parent.width; text: panel.hasRow && panel.row.parentPath ? panel.row.parentPath : panel.path.replace(/[^\\/]+$/, "").replace(/[\\/]$/, ""); color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12; elide: Text.ElideMiddle }
+                HoverHandler { id: headingHover }
+                Hint { visible: headingHover.hovered && !panel.Window.window.tooltipsBlocked; text: panel.path; delay: 900 }
             }
             Row {
                 id: actions
+                objectName: "previewActions"
                 anchors.right: parent.right; anchors.rightMargin: 18
-                anchors.verticalCenter: parent.verticalCenter
+                y: panel.compactHeader ? parent.height - height - 12 : (parent.height - height) / 2
                 spacing: 5
-                DeskButton { text: "复制位置"; compact: true; subtle: true; onClicked: client.copyLocation() }
+                DeskButton { objectName: "copyLocationButton"; text: "复制位置"; iconName: "copy"; subtle: true; tooltip: "复制文件路径及匹配位置"; onClicked: client.copyLocation() }
                 DeskButton { objectName: "revealButton"; iconName: "folder"; subtle: true; tooltip: "在文件夹中显示"; onClicked: client.revealSelected() }
-                DeskButton { objectName: "fitButton"; visible: panel.isPdf; iconName: "fit"; subtle: true; tooltip: preview.fitWidth ? "适合整页" : "适合宽度"; onClicked: preview.setFitWidth(!preview.fitWidth) }
-                DeskButton { objectName: "openButton"; text: panel.isMedia ? "播放" : "打开"; iconName: panel.isMedia ? "play" : "arrow"; onClicked: panel.isMedia ? preview.open() : client.openSelected() }
+                DeskButton { objectName: "fitButton"; visible: panel.isPdf; iconName: "fit"; subtle: true; checked: preview.fitWidth; Accessible.checkable: true; Accessible.checked: checked; tooltip: preview.fitWidth ? "适合整页" : "适合宽度"; onClicked: preview.setFitWidth(!preview.fitWidth) }
+                DeskButton { objectName: "openButton"; text: panel.isMedia ? "播放" : "打开"; iconName: panel.isMedia ? "play" : "arrow"; primary: true; onClicked: panel.isMedia ? preview.open() : client.openSelected() }
             }
         }
         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line; visible: panel.hasRow }
@@ -70,6 +82,7 @@ Rectangle {
 
             Flickable {
                 id: imageScroll
+                objectName: "previewImageScroll"
                 anchors.fill: parent; anchors.margins: 20
                 visible: panel.hasRow && preview.source.length > 0
                 contentWidth: width
@@ -95,10 +108,13 @@ Rectangle {
                 }
             }
             ScrollView {
+                id: textScroll
+                objectName: "previewTextScroll"
                 anchors.fill: parent; anchors.margins: 24
                 visible: panel.hasRow && !preview.source && preview.text.length > 0
                 clip: true
                 TextArea {
+                    objectName: "previewText"
                     text: preview.text
                     readOnly: true
                     selectByMouse: true
@@ -189,6 +205,7 @@ Rectangle {
                         objectName: "videoTimeline"
                         Layout.fillWidth: true; implicitHeight: 24
                         from: 0; to: Math.max(1, preview.duration); value: preview.position
+                        Accessible.name: "播放位置"
                         onMoved: { client.markInteraction(); seekTimer.seekTo = value; seekTimer.restart(); }
                         background: Rectangle {
                             x: seekSlider.leftPadding; y: seekSlider.topPadding + seekSlider.availableHeight / 2 - 2

@@ -2,6 +2,7 @@
 .everytensor/
 __pycache__/
 .pytest_cache/
+.ui-review/
 *.pyc
 models/
 release/

@@ -4,7 +4,7 @@
 
 **简体中文** | [English](README.en.md) | [日本語](README.ja.md) | [Español](README.es.md)
 
-Windows 预览版 · v0.1.0-alpha.1
+Windows 预览版 · main 开发版
 
 所有文件，都是向量。
 
@@ -32,9 +32,9 @@ Windows 预览版 · v0.1.0-alpha.1
 
 ## 安装与启动
 
-此预览版从源码运行。
+此预览版从源码运行。以下步骤使用包含最新改动的 `main` 分支。[已发布的 v0.1.0-alpha.1](https://github.com/SinsapZ/everytensor/releases/tag/v0.1.0-alpha.1) 保留原有内容，不包含之后的更新。
 
-1. 下载[源码 ZIP](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.1/everytensor-0.1.0-alpha.1-source.zip)。
+1. 下载[最新源码 ZIP](https://github.com/SinsapZ/everytensor/archive/refs/heads/main.zip)。
 2. 解压到你有写入权限的文件夹。
 3. 双击 `setup-quick-model.cmd`。
 4. 等待安装完成。
@@ -78,7 +78,12 @@ python -m venv .venv
 | --- | --- |
 | `Ctrl+K`、`Ctrl+L` 或 `Ctrl+F` | 移到搜索框 |
 | `↑`、`↓` | 选择结果 |
+| 首条结果上按 `↑` | 返回搜索框 |
+| 类型标签上按 `←`、`→` | 切换文件类型 |
 | `Enter` | 打开结果 |
+| 结果列表中按 `Shift+Enter` | 在文件夹中显示 |
+| 结果列表中按 `Ctrl+C` | 复制文件路径及匹配位置 |
+| 右键结果或按 `Shift+F10` | 打开结果操作菜单 |
 | `Esc` | 清空搜索 |
 | `Ctrl+,` | 打开设置 |
 

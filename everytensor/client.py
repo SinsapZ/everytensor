@@ -32,6 +32,7 @@ class Controller(QObject):
     previewRequested = Signal(object)
     settingsApplied = Signal()
     errorOccurred = Signal(str)
+    notification = Signal(str)
     rowsAboutToChange = Signal()
     rowsChanged = Signal()
 
@@ -540,6 +541,7 @@ class Controller(QObject):
         if self._selected:
             from PySide6.QtGui import QGuiApplication
             QGuiApplication.clipboard().setText(locations.reference(self._selected))
+            self.notification.emit('已复制文件位置')
 
     @Slot()
     def revealSelected(self):

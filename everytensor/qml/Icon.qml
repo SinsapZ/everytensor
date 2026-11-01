@@ -29,6 +29,7 @@ Canvas {
         else if(name==="image"){line([3,4,21,4,21,20,3,20,3,4]);circle(8,9,1.5);line([4,18,10,12,14,16,17,13,21,17]);}
         else if(name==="video"){line([3,5,21,5,21,19,3,19,3,5]);c.beginPath();c.moveTo(10,9);c.lineTo(16,12);c.lineTo(10,15);c.closePath();c.fill();}
         else if(name==="code"){line([8,6,2,12,8,18]);line([16,6,22,12,16,18]);line([14,4,10,20]);}
+        else if(name==="audio"){line([10,17,10,5,20,3,20,15]);circle(7,17,3);circle(17,15,3);}
         else if(name==="play"){c.beginPath();c.moveTo(8,5);c.lineTo(20,12);c.lineTo(8,19);c.closePath();c.fill();}
         else if(name==="pause"){line([8,5,8,19]);line([16,5,16,19]);}
         else if(name==="plus"){line([5,12,19,12]);line([12,5,12,19]);}

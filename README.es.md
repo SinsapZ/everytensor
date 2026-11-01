@@ -4,7 +4,7 @@ Autor: **[sinsap](https://github.com/SinsapZ)**
 
 [简体中文](README.md) | [English](README.en.md) | [日本語](README.ja.md) | **Español**
 
-Versión preliminar para Windows · v0.1.0-alpha.1
+Versión preliminar para Windows · versión de desarrollo de main
 
 Cada archivo es un vector.
 
@@ -32,9 +32,9 @@ Para usar audio y vídeo, instala [FFmpeg](https://ffmpeg.org/download.html). Co
 
 ## Instalación e inicio
 
-Esta versión preliminar se ejecuta desde el código fuente.
+Esta versión preliminar se ejecuta desde el código fuente. Los pasos siguientes usan la rama `main`, que incluye los cambios más recientes. La versión publicada [v0.1.0-alpha.1](https://github.com/SinsapZ/everytensor/releases/tag/v0.1.0-alpha.1) conserva su contenido original y no incluye las actualizaciones posteriores.
 
-1. Descarga el [ZIP con el código fuente](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.1/everytensor-0.1.0-alpha.1-source.zip).
+1. Descarga el [ZIP con el código fuente más reciente](https://github.com/SinsapZ/everytensor/archive/refs/heads/main.zip).
 2. Extrae el ZIP en una carpeta donde tengas permiso de escritura.
 3. Ejecuta `setup-quick-model.cmd`.
 4. Espera a que termine la instalación.
@@ -78,7 +78,12 @@ Si la ventana se cierra al iniciar, ejecuta el último comando en una terminal p
 | --- | --- |
 | `Ctrl+K`, `Ctrl+L` o `Ctrl+F` | Ir al campo de búsqueda |
 | `↑`, `↓` | Seleccionar un resultado |
+| `↑` en el primer resultado | Volver al campo de búsqueda |
+| `←`, `→` en una pestaña de tipo | Cambiar el tipo de archivo |
 | `Enter` | Abrir el resultado |
+| `Shift+Enter` en la lista de resultados | Mostrar en la carpeta |
+| `Ctrl+C` en la lista de resultados | Copiar la ruta y la ubicación de la coincidencia |
+| Clic derecho en un resultado o `Shift+F10` | Abrir el menú del resultado |
 | `Esc` | Borrar la búsqueda |
 | `Ctrl+,` | Abrir la configuración |
 

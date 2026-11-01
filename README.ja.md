@@ -4,7 +4,7 @@
 
 [简体中文](README.md) | [English](README.en.md) | **日本語** | [Español](README.es.md)
 
-Windows プレビュー版 · v0.1.0-alpha.1
+Windows プレビュー版 · main 開発版
 
 すべてのファイルは、ベクトルです。
 
@@ -32,9 +32,9 @@ Windows プレビュー版 · v0.1.0-alpha.1
 
 ## インストールと起動
 
-このプレビュー版はソースコードから実行します。
+このプレビュー版はソースコードから実行します。以下の手順では、最新の変更を含む `main` ブランチを使用します。公開済みの [v0.1.0-alpha.1](https://github.com/SinsapZ/everytensor/releases/tag/v0.1.0-alpha.1) は公開時の内容を維持しており、その後の更新は含まれません。
 
-1. [ソース ZIP](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.1/everytensor-0.1.0-alpha.1-source.zip) をダウンロードしてください。
+1. [最新のソース ZIP](https://github.com/SinsapZ/everytensor/archive/refs/heads/main.zip) をダウンロードしてください。
 2. 書き込み権限のあるフォルダーに展開してください。
 3. `setup-quick-model.cmd` を実行してください。
 4. インストールが終わるまで待ってください。
@@ -78,7 +78,12 @@ python -m venv .venv
 | --- | --- |
 | `Ctrl+K`、`Ctrl+L`、`Ctrl+F` | 検索欄に移動 |
 | `↑`、`↓` | 結果を選択 |
+| 先頭の結果で `↑` | 検索欄に戻る |
+| 種類タブで `←`、`→` | ファイルの種類を切り替え |
 | `Enter` | 結果を開く |
+| 結果一覧で `Shift+Enter` | フォルダーに表示 |
+| 結果一覧で `Ctrl+C` | ファイルパスと一致した位置をコピー |
+| 結果を右クリック、または `Shift+F10` | 結果の操作メニューを開く |
 | `Esc` | 検索を消去 |
 | `Ctrl+,` | 設定を開く |
 

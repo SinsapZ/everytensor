@@ -10,6 +10,7 @@ Dialog {
     property bool advanced: false
     property string localError: ""
     modal: true
+    focus: true
     dim: true
     padding: 28
     closePolicy: submitting ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside

@@ -17,7 +17,9 @@ ApplicationWindow {
     property real preferredListWidth: 360
     property string toastMessage: ""
     property string dismissedWarning: ""
-    readonly property bool tooltipsBlocked: settingsDialog.visible
+    property Item settingsReturnFocus: null
+    property string feedbackMessage: ""
+    readonly property bool tooltipsBlocked: settingsDialog.visible || resultMenu.visible
     readonly property string currentNotice: toastMessage || (client.warning !== dismissedWarning ? client.warning : "")
     property int anchorFileId: -1
     property real anchorOffset: 0
@@ -26,18 +28,31 @@ ApplicationWindow {
     readonly property bool hasSelected: client.selected && !!client.selected.name
     function focusSearch() { search.forceActiveFocus(); search.selectAll(); }
     function goHome() { client.setQuery(""); client.setKind(""); search.forceActiveFocus(); }
-    function openCurrent() { if(hasSelected && client.selected.kind === "video") preview.open(); else client.openSelected(); }
+    function openSettings() {
+        if(settingsDialog.visible) return;
+        settingsReturnFocus = window.activeFocusItem;
+        settingsDialog.open();
+    }
+    function openCurrent() { if(hasSelected && (client.selected.kind === "video" || client.selected.kind === "audio")) preview.open(); else client.openSelected(); }
+    function showResultMenu() {
+        if(!hasSelected) return;
+        var item = results.currentItem;
+        resultMenu.popup(item || results, item ? Math.min(item.width - 10, 160) : 20, item ? item.height / 2 : 20);
+    }
     function moveSelection(delta) {
         if(!results.count) return;
         client.markInteraction();
         results.currentIndex = Math.max(0, Math.min(results.count - 1, results.currentIndex + delta));
+        // Read the model directly: a virtualized delegate may not exist yet.
+        client.selectFile(client.results.get(results.currentIndex).fileId, true);
         results.positionViewAtIndex(results.currentIndex, ListView.Contain);
         results.forceActiveFocus();
-        Qt.callLater(function(){ if(results.currentItem) client.selectFile(results.currentItem.fileId, true); });
     }
     Connections {
         target: client
         function onErrorOccurred(message) { window.toastMessage = message; window.dismissedWarning = ""; }
+        function onNotification(message) { window.feedbackMessage = message; feedbackTimer.restart(); }
+        function onSelectedChanged() { results.currentIndex = client.results.indexOf(client.selectedId); }
         function onRowsAboutToChange() {
             window.restoreRevision += 1;
             window.anchorFileId = -1;
@@ -63,11 +78,11 @@ ApplicationWindow {
             });
         }
     }
-    Shortcut { sequence: "Ctrl+K"; enabled: !settingsDialog.opened; onActivated: window.focusSearch() }
-    Shortcut { sequence: "Ctrl+L"; enabled: !settingsDialog.opened; onActivated: window.focusSearch() }
-    Shortcut { sequence: "Ctrl+F"; enabled: !settingsDialog.opened; onActivated: window.focusSearch() }
-    Shortcut { sequence: "Ctrl+,"; onActivated: settingsDialog.open() }
-    Shortcut { sequence: "Escape"; enabled: !settingsDialog.opened; onActivated: { if(client.query.length) client.setQuery(""); else client.setKind(""); search.forceActiveFocus(); } }
+    Shortcut { sequence: "Ctrl+K"; enabled: !window.tooltipsBlocked; onActivated: window.focusSearch() }
+    Shortcut { sequence: "Ctrl+L"; enabled: !window.tooltipsBlocked; onActivated: window.focusSearch() }
+    Shortcut { sequence: "Ctrl+F"; enabled: !window.tooltipsBlocked; onActivated: window.focusSearch() }
+    Shortcut { sequence: "Ctrl+,"; enabled: !resultMenu.visible; onActivated: window.openSettings() }
+    Shortcut { sequence: "Escape"; enabled: !window.tooltipsBlocked && !search.inputMethodComposing; onActivated: { if(client.query.length) client.setQuery(""); else client.setKind(""); search.forceActiveFocus(); } }
     onClosing: client.close()
 
     ColumnLayout {
@@ -127,15 +142,16 @@ ApplicationWindow {
                             Accessible.name: "搜索文件"
                             onTextEdited: if(!inputMethodComposing) client.setQuery(text)
                             onInputMethodComposingChanged: if(!inputMethodComposing) client.setQuery(text)
-                            Keys.onDownPressed: window.moveSelection(results.currentIndex < 0 ? 1 : 0)
-                            Keys.onReturnPressed: window.openCurrent()
+                            Keys.onDownPressed: function(event) { if(!inputMethodComposing) window.moveSelection(results.currentIndex < 0 ? 1 : 0); else event.accepted = false; }
+                            Keys.onReturnPressed: function(event) { if(!inputMethodComposing) window.openCurrent(); else event.accepted = false; }
+                            Keys.onEnterPressed: function(event) { if(!inputMethodComposing) window.openCurrent(); else event.accepted = false; }
                             Component.onCompleted: forceActiveFocus()
                         }
                         Text { visible: !search.text.length; text: "Ctrl K"; color: Theme.quiet; font.family: Theme.family; font.pixelSize: 11; Layout.rightMargin: 8 }
                         DeskButton { objectName: "clearSearchButton"; visible: search.text.length > 0; iconName: "close"; compact: true; subtle: true; tooltip: "清空搜索"; onClicked: { client.setQuery(""); search.forceActiveFocus(); } }
                     }
                 }
-                DeskButton { id: settingsButton; objectName: "settingsButton"; iconName: "settings"; subtle: true; tooltip: "设置  Ctrl ,"; onClicked: settingsDialog.open() }
+                DeskButton { id: settingsButton; objectName: "settingsButton"; iconName: "settings"; subtle: true; tooltip: "设置  Ctrl ,"; onClicked: window.openSettings() }
             }
         }
 
@@ -161,8 +177,9 @@ ApplicationWindow {
                         Accessible.role: Accessible.PageTab
                         Accessible.selected: selected
                         onClicked: client.setKind(modelData.key)
-                        Keys.onRightPressed: { var next = tabsRepeater.itemAt((index+1)%5); client.setKind(next.modelData.key); next.forceActiveFocus(); }
-                        Keys.onLeftPressed: { var next = tabsRepeater.itemAt((index+4)%5); client.setKind(next.modelData.key); next.forceActiveFocus(); }
+                        Keys.onRightPressed: { var next = tabsRepeater.itemAt((index+1)%tabsRepeater.count); client.setKind(next.modelData.key); next.forceActiveFocus(); }
+                        Keys.onLeftPressed: { var next = tabsRepeater.itemAt((index+tabsRepeater.count-1)%tabsRepeater.count); client.setKind(next.modelData.key); next.forceActiveFocus(); }
+                        Keys.onDownPressed: window.moveSelection(0)
                         background: Rectangle { radius: 7; color: tab.selected ? Theme.paper : tab.hovered ? Theme.hover : "transparent"; border.color: tab.visualFocus ? Theme.accent : tab.selected ? Theme.line : "transparent"; Behavior on color { ColorAnimation { duration: Theme.fast } } }
                         contentItem: Text { text: tab.modelData.label; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; font.family: Theme.family; font.pixelSize: 13; font.weight: tab.selected ? Font.DemiBold : Font.Normal; color: tab.selected ? Theme.accent : Theme.secondary }
                     }
@@ -187,7 +204,7 @@ ApplicationWindow {
             RowLayout {
                 anchors.fill: parent; anchors.margins: 10; spacing: 10
                 Text { id: noticeText; text: window.currentNotice; color: Theme.accent; font.family: Theme.family; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                DeskButton { text: "查看设置"; compact: true; subtle: true; onClicked: settingsDialog.open() }
+                DeskButton { text: "查看设置"; compact: true; subtle: true; onClicked: window.openSettings() }
                 DeskButton { iconName: "close"; compact: true; subtle: true; tooltip: "关闭提示"; onClicked: { window.toastMessage = ""; window.dismissedWarning = client.warning; } }
             }
         }
@@ -268,16 +285,20 @@ ApplicationWindow {
                     onMovementStarted: client.markInteraction()
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                     Keys.onDownPressed: window.moveSelection(1)
-                    Keys.onUpPressed: window.moveSelection(-1)
-                    Keys.onReturnPressed: window.openCurrent()
+                    Keys.onUpPressed: { if(currentIndex <= 0) search.forceActiveFocus(); else window.moveSelection(-1); }
+                    Keys.onReturnPressed: function(event) { if(event.modifiers & Qt.ShiftModifier) client.revealSelected(); else window.openCurrent(); }
+                    Keys.onEnterPressed: function(event) { if(event.modifiers & Qt.ShiftModifier) client.revealSelected(); else window.openCurrent(); }
                     Keys.onPressed: function(event) {
                         if(event.key === Qt.Key_Home) { window.moveSelection(-results.count); event.accepted = true; }
                         else if(event.key === Qt.Key_End) { window.moveSelection(results.count); event.accepted = true; }
-                        else if(event.key === Qt.Key_PageDown) { window.moveSelection(7); event.accepted = true; }
-                        else if(event.key === Qt.Key_PageUp) { window.moveSelection(-7); event.accepted = true; }
+                        else if(event.key === Qt.Key_PageDown) { window.moveSelection(Math.max(1, Math.floor(results.height / 80))); event.accepted = true; }
+                        else if(event.key === Qt.Key_PageUp) { window.moveSelection(-Math.max(1, Math.floor(results.height / 80))); event.accepted = true; }
+                        else if(event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) { client.copyLocation(); event.accepted = true; }
+                        else if(event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier))) { window.showResultMenu(); event.accepted = true; }
                     }
                     delegate: Rectangle {
                         id: resultRow
+                        objectName: "resultRow_" + fileId
                         required property int index
                         required property int fileId
                         required property string name
@@ -311,24 +332,31 @@ ApplicationWindow {
                                 Layout.preferredWidth: 38; Layout.preferredHeight: 42
                                 radius: 7
                                 color: resultRow.selected ? "#caffffff" : "#a0ffffff"
-                                Icon { anchors.centerIn: parent; width: 22; height: 22; visible: !thumbnail.visible; name: resultRow.kind === "image" ? "image" : resultRow.kind === "video" ? "video" : resultRow.kind === "code" ? "code" : "file"; color: resultRow.selected ? Theme.accent : Theme.secondary }
+                                Icon { anchors.centerIn: parent; width: 22; height: 22; visible: !thumbnail.visible; name: resultRow.kind === "image" ? "image" : resultRow.kind === "video" ? "video" : resultRow.kind === "audio" ? "audio" : resultRow.kind === "code" ? "code" : "file"; color: resultRow.selected ? Theme.accent : Theme.secondary }
                                 Image { id: thumbnail; anchors.fill: parent; anchors.margins: 2; source: resultRow.thumbnailSource; visible: source.toString().length > 0 && status === Image.Ready; fillMode: Image.PreserveAspectCrop; asynchronous: true; smooth: true; clip: true }
                             }
                             ColumnLayout {
                                 Layout.fillWidth: true; spacing: 6
                                 Text { text: resultRow.name; color: Theme.ink; font.family: Theme.family; font.pixelSize: 14; font.weight: resultRow.selected ? Font.DemiBold : Font.Normal; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                Text { text: resultRow.parentPath; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 8
+                                    Text { text: resultRow.parentPath; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                    Text { visible: resultRow.locationLabel.length > 0; text: resultRow.locationLabel; color: resultRow.selected ? Theme.accent : Theme.quiet; font.family: Theme.family; font.pixelSize: 11; elide: Text.ElideRight; Layout.maximumWidth: 76 }
+                                }
                             }
-                            Text { visible: resultRow.locationLabel.length > 0; text: resultRow.locationLabel; color: resultRow.selected ? Theme.accent : Theme.quiet; font.family: Theme.family; font.pixelSize: 11; elide: Text.ElideRight; Layout.maximumWidth: 65 }
                         }
                         MouseArea {
                             id: pointer
                             anchors.fill: parent; hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
                             cursorShape: Qt.PointingHandCursor
                             onPressed: resultRow.tooltipSuppressed = true
                             onExited: resultRow.tooltipSuppressed = false
-                            onClicked: { results.currentIndex = resultRow.index; results.forceActiveFocus(); client.selectFile(resultRow.fileId, true); }
-                            onDoubleClicked: { client.selectFile(resultRow.fileId, true); window.openCurrent(); }
+                            onClicked: function(mouse) {
+                                results.currentIndex = resultRow.index; results.forceActiveFocus(); client.selectFile(resultRow.fileId, true);
+                                if(mouse.button === Qt.RightButton) resultMenu.popup(resultRow, mouse.x, mouse.y);
+                            }
+                            onDoubleClicked: function(mouse) { if(mouse.button === Qt.LeftButton) { client.selectFile(resultRow.fileId, true); window.openCurrent(); } }
                         }
                         Hint {
                             parent: resultRow
@@ -348,6 +376,11 @@ ApplicationWindow {
                     Icon { anchors.horizontalCenter: parent.horizontalCenter; name: "search"; width: 30; height: 30; color: Theme.quiet }
                     Text { width: parent.width; text: client.emptyMessage || (client.pending ? "正在查找…" : "没有找到相关文件"); color: Theme.secondary; font.family: Theme.family; font.pixelSize: 14; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap }
                     Text { width: parent.width; visible: !client.pending; text: "试试其他描述，或检查搜索范围。"; color: Theme.quiet; font.family: Theme.family; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap }
+                    Column {
+                        anchors.horizontalCenter: parent.horizontalCenter; spacing: 4; visible: !client.pending
+                        DeskButton { objectName: "clearFilterButton"; visible: client.kind.length > 0; text: "搜索全部类型"; compact: true; onClicked: { client.setKind(""); search.forceActiveFocus(); } }
+                        DeskButton { objectName: "searchScopeButton"; text: "检查搜索范围"; compact: true; subtle: true; onClicked: window.openSettings() }
+                    }
                 }
             }
             Item {
@@ -356,11 +389,13 @@ ApplicationWindow {
                 Rectangle { anchors.centerIn: parent; width: 1; height: 30; color: splitter.containsMouse || splitter.pressed ? Theme.selectionLine : "transparent" }
                 MouseArea {
                     id: splitter
+                    objectName: "resultsSplitter"
                     anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.SplitHCursor
                     property real start: 0
                     property real startWidth: 0
                     onPressed: function(mouse) { start = mapToItem(workspace, mouse.x, mouse.y).x; startWidth = resultsPanel.width; }
                     onPositionChanged: function(mouse) { if(pressed) window.preferredListWidth = Math.max(270, Math.min(workspace.width * .44, startWidth + mapToItem(workspace, mouse.x, mouse.y).x - start)); }
+                    onDoubleClicked: window.preferredListWidth = 360
                 }
             }
             PreviewPane { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 350 }
@@ -375,7 +410,7 @@ ApplicationWindow {
                 Text { text: "本地搜索"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 11 }
                 Text { visible: client.semanticStage.length > 0 && window.browsing; text: "·  " + (client.semanticStage === "quick" ? "快速语义（文字）" : "内容语义"); color: Theme.quiet; font.family: Theme.family; font.pixelSize: 11 }
                 Item { Layout.fillWidth: true }
-                Text { text: window.browsing ? "↑ ↓  选择     Enter  打开     Esc  清空" : "Ctrl K  搜索     ·     文件始终保留在本机"; color: Theme.quiet; font.family: Theme.family; font.pixelSize: 11 }
+                Text { text: window.browsing ? "↑ ↓  选择     Enter  打开     右键  更多     Esc  清空" : "Ctrl K  搜索     ·     文件始终保留在本机"; color: Theme.quiet; font.family: Theme.family; font.pixelSize: 11 }
             }
         }
     }
@@ -385,6 +420,52 @@ ApplicationWindow {
         anchors.centerIn: parent
         width: Math.min(690, window.width - 72)
         height: Math.min(720, window.height - 64)
-        onClosed: settingsButton.forceActiveFocus()
+        onClosed: {
+            var target = window.settingsReturnFocus;
+            if(target && target.visible && target.enabled) target.forceActiveFocus();
+            else window.focusSearch();
+        }
+    }
+    Menu {
+        id: resultMenu
+        objectName: "resultMenu"
+        width: 244
+        padding: 5
+        modal: true
+        dim: false
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle { color: Theme.paper; radius: 10; border.color: Theme.line }
+        delegate: MenuItem {
+            id: menuItem
+            implicitHeight: 38
+            Accessible.name: text.split("\t")[0]
+            contentItem: RowLayout {
+                spacing: 18
+                Text { text: menuItem.text.split("\t")[0]; color: Theme.ink; font.family: Theme.family; font.pixelSize: 13; Layout.fillWidth: true; Layout.leftMargin: 10 }
+                Text { text: menuItem.text.split("\t")[1] || ""; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 11; Layout.rightMargin: 10 }
+            }
+            background: Rectangle { radius: 6; color: menuItem.highlighted ? Theme.selection : "transparent" }
+        }
+        Action { text: "打开原文件\tEnter"; onTriggered: window.openCurrent() }
+        Action { text: "在文件夹中显示\tShift+Enter"; onTriggered: client.revealSelected() }
+        Action { text: "复制文件位置\tCtrl+C"; onTriggered: client.copyLocation() }
+        onClosed: if(window.browsing) results.forceActiveFocus()
+    }
+    Timer { id: feedbackTimer; interval: 2200; onTriggered: window.feedbackMessage = "" }
+    Rectangle {
+        objectName: "feedbackToast"
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom; anchors.bottomMargin: 48
+        width: feedbackRow.implicitWidth + 32; height: 42; radius: 10
+        color: Theme.ink
+        visible: window.feedbackMessage.length > 0
+        Accessible.role: Accessible.AlertMessage
+        Accessible.name: window.feedbackMessage
+        RowLayout {
+            id: feedbackRow
+            anchors.centerIn: parent; spacing: 9
+            Icon { name: "check"; color: "#b9d5bb"; Layout.preferredWidth: 17; Layout.preferredHeight: 17 }
+            Text { text: window.feedbackMessage; color: "white"; font.family: Theme.family; font.pixelSize: 13 }
+        }
     }
 }
