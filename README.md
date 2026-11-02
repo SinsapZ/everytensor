@@ -113,22 +113,6 @@ python -m venv .venv
 
 索引可能包含个人资料，请勿公开上传。分享日志前，请删除其中的私人路径和内容。
 
-## 构建 Windows 安装包
-
-使用 Windows x64 和 Python 3.11，先运行 `setup-quick-model.cmd` 准备固定版本的轻量模型，再运行 `build-windows.cmd`。构建脚本创建独立 `.build-venv`，安装固定版本依赖，下载并校验 Inno Setup 6.7.3 编译器，在项目内以便携模式使用。也可传入 `--iscc "路径\ISCC.exe"`。
-
-构建使用 PyInstaller 打包，自动验证离线模型、中文文件名和正文搜索、搜索后台、PDF 子进程及 QML 界面；成功后才生成安装包。重新打包已有 `dist/EveryTensor` 时可用 `build-windows.cmd --reuse-bundle`，源码改动后应执行完整构建。
-
-完整安装生命周期验证（会在 `build/` 中安装、覆盖安装及卸载测试副本）：
-
-```powershell
-.\.build-venv\Scripts\python.exe tools\verify_windows_installer.py release\windows\EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe
-```
-
-验证使用无 Python 的 PATH 和带中文、空格的安装目录，并检查卸载保留用户数据。为保护已有安装，若当前账户已注册 EveryTensor，验证会拒绝执行；请使用干净的 Windows 账户或虚拟机。GitHub Actions 的 `Build Windows installer` 工作流也可手动生成并验证构建产物，不自动发布 Release。
-
-在禁止写注册表或开始菜单的构建沙箱中，可为验证命令添加 `--isolated`。该模式使用安装器的 `/ISOLATED=1` 参数，只安装文件和本地卸载器，不创建快捷方式或 Windows 卸载注册项；报告会标明这些未验证项目。普通安装保持正常的开始菜单和系统卸载注册行为。
-
 ## 许可证
 
 Copyright (C) 2026 EveryTensor contributors.
