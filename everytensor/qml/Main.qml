@@ -19,7 +19,7 @@ ApplicationWindow {
     property string dismissedWarning: ""
     property Item settingsReturnFocus: null
     property string feedbackMessage: ""
-    readonly property bool tooltipsBlocked: settingsDialog.visible || resultMenu.visible
+    readonly property bool tooltipsBlocked: settingsDialog.visible || modelSetupDialog.visible || resultMenu.visible
     readonly property string currentNotice: toastMessage || (client.warning !== dismissedWarning ? client.warning : "")
     property int anchorFileId: -1
     property real anchorOffset: 0
@@ -27,6 +27,8 @@ ApplicationWindow {
     readonly property bool singleVideo: client.kind === "video" && results.count === 1
     readonly property bool hasSelected: client.selected && !!client.selected.name
     function focusSearch() { search.forceActiveFocus(); search.selectAll(); }
+    function openModelSetup() { modelSetupDialog.open(); }
+    Component.onCompleted: { if(modelSetup.shouldOffer) Qt.callLater(window.openModelSetup); }
     function goHome() { client.setQuery(""); client.setKind(""); search.forceActiveFocus(); }
     function openSettings() {
         if(settingsDialog.visible) return;
@@ -81,7 +83,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+K"; enabled: !window.tooltipsBlocked; onActivated: window.focusSearch() }
     Shortcut { sequence: "Ctrl+L"; enabled: !window.tooltipsBlocked; onActivated: window.focusSearch() }
     Shortcut { sequence: "Ctrl+F"; enabled: !window.tooltipsBlocked; onActivated: window.focusSearch() }
-    Shortcut { sequence: "Ctrl+,"; enabled: !resultMenu.visible; onActivated: window.openSettings() }
+    Shortcut { sequence: "Ctrl+,"; enabled: !resultMenu.visible && !modelSetupDialog.visible; onActivated: window.openSettings() }
     Shortcut { sequence: "Escape"; enabled: !window.tooltipsBlocked && !search.inputMethodComposing; onActivated: { if(client.query.length) client.setQuery(""); else client.setKind(""); search.forceActiveFocus(); } }
     onClosing: client.close()
 
@@ -425,6 +427,13 @@ ApplicationWindow {
             if(target && target.visible && target.enabled) target.forceActiveFocus();
             else window.focusSearch();
         }
+    }
+    ModelSetupDialog {
+        id: modelSetupDialog
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(680, window.width - 72)
+        onClosed: { if(settingsDialog.visible) settingsDialog.forceActiveFocus(); else window.focusSearch(); }
     }
     Menu {
         id: resultMenu

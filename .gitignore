@@ -1,4 +1,7 @@
 .venv/
+.build-venv/
+build/
+dist/
 .everytensor/
 __pycache__/
 .pytest_cache/

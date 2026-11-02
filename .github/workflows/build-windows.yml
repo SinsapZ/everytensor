@@ -1,0 +1,47 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+          architecture: x64
+      - name: Prepare isolated release environment
+        shell: pwsh
+        run: |
+          python -m venv .build-venv
+          .\.build-venv\Scripts\python.exe -m pip install -r requirements-build.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\.build-venv\Scripts\python.exe -X utf8 tools\install_quick_model.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Verify desktop, freeze and build installer
+        shell: pwsh
+        run: |
+          .\.build-venv\Scripts\python.exe -X utf8 tools\verify_model_setup.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\.build-venv\Scripts\python.exe -X utf8 tools\verify_ui.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\.build-venv\Scripts\python.exe -X utf8 tools\build_windows.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Verify install, upgrade and uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem release/windows/*-setup.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          .\.build-venv\Scripts\python.exe -X utf8 tools\verify_windows_installer.py $installer.FullName
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EveryTensor-windows-x64
+          path: release/windows/
+          if-no-files-found: error

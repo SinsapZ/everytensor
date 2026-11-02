@@ -4,7 +4,7 @@
 
 **简体中文** | [English](README.en.md) | [日本語](README.ja.md) | [Español](README.es.md)
 
-Windows 预览版 · main 开发版
+Windows 预览版 · v0.1.0-alpha.3
 
 所有文件，都是向量。
 
@@ -22,7 +22,21 @@ Windows 预览版 · main 开发版
 
 索引记录文件信息，供搜索使用。应用发现文件后，就可以按名称搜索。按内容搜索前，应用需要先读取相应内容。
 
-## 运行要求
+## Windows 安装包
+
+双击 [EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.3/EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe)，按向导安装后，从开始菜单打开 EveryTensor。支持 Windows 10 1809 及以上的 64 位系统，安装到当前用户，无需管理员权限。
+
+安装包内置 Python、桌面依赖和轻量文字模型，安装及文字搜索均可离线使用。可按名称、关键词和文字含义搜索，并预览 PDF、图片及文档。
+
+首次启动可选择安装多模态模型，也可稍后从设置中的「多模态搜索」进入。下载约 1.88 GB，自动准备模型、CPU 推理组件和 FFmpeg，无需另装 Python。支持后台下载、暂停续传、失败重试和导入已有模型；所有下载均校验大小与 SHA-256，验证文字、图片、音视频推理成功后才启用。安装时需联网，安装后在本机离线运行。模型和组件保存在用户数据目录的 `multimodal/` 中，与索引预算分开计算；首次下载建议留出至少 5 GiB 可用空间。
+
+按 `Ctrl+,` 打开设置，选择搜索范围。**首次启动默认搜索所有可访问的固定本地磁盘**，建议先选择一个较小的资料目录。默认索引预算为 8 GiB，模型文件另占空间。
+
+程序默认安装到 `%LOCALAPPDATA%\Programs\EveryTensor`；索引、设置和日志位于 `%LOCALAPPDATA%\EveryTensor\.everytensor`，覆盖安装与卸载均保留这些用户数据。旧源码版的 `.everytensor` 不会自动迁移。卸载可在 Windows「已安装的应用」中完成。
+
+本地构建产物位于 `release/windows/`，同时提供 SHA-256 校验文件、对应源码 ZIP、构建清单和验证报告。当前构建未进行代码签名。安装包中的 `licenses/` 和 `corresponding-source.zip` 提供依赖许可证及本程序对应源码。
+
+## 源码运行要求
 
 - 64 位 Windows。
 - Python 3.11。安装 Python 时勾选 “Add python.exe to PATH”。
@@ -30,9 +44,9 @@ Windows 预览版 · main 开发版
 
 使用音视频功能前，请安装 [FFmpeg](https://ffmpeg.org/download.html)。确认 `ffmpeg`、`ffprobe` 和 `ffplay` 命令均可在终端中运行。
 
-## 安装与启动
+## 从源码安装与启动
 
-此预览版从源码运行。以下步骤使用包含最新改动的 `main` 分支。[已发布的 v0.1.0-alpha.1](https://github.com/SinsapZ/everytensor/releases/tag/v0.1.0-alpha.1) 保留原有内容，不包含之后的更新。
+以下步骤适用于源码运行，也可用于安装完整多模态模型。[已发布的 v0.1.0-alpha.1](https://github.com/SinsapZ/everytensor/releases/tag/v0.1.0-alpha.1) 保留原有内容，不包含之后的更新。
 
 1. 下载[最新源码 ZIP](https://github.com/SinsapZ/everytensor/archive/refs/heads/main.zip)。
 2. 解压到你有写入权限的文件夹。
@@ -89,7 +103,7 @@ python -m venv .venv
 
 应用在本机读取文件、建立索引和运行模型。下载依赖和模型不会上传你的文件。应用不会改写原文件。
 
-以下文件夹位于项目目录中，不包含在源码 ZIP 内：
+源码运行时，以下文件夹位于项目目录中，不包含在源码 ZIP 内；安装版的数据位置见上方：
 
 | 文件夹 | 内容 |
 | --- | --- |
@@ -98,6 +112,22 @@ python -m venv .venv
 | `.venv/` | Python 运行环境和依赖 |
 
 索引可能包含个人资料，请勿公开上传。分享日志前，请删除其中的私人路径和内容。
+
+## 构建 Windows 安装包
+
+使用 Windows x64 和 Python 3.11，先运行 `setup-quick-model.cmd` 准备固定版本的轻量模型，再运行 `build-windows.cmd`。构建脚本创建独立 `.build-venv`，安装固定版本依赖，下载并校验 Inno Setup 6.7.3 编译器，在项目内以便携模式使用。也可传入 `--iscc "路径\ISCC.exe"`。
+
+构建使用 PyInstaller 打包，自动验证离线模型、中文文件名和正文搜索、搜索后台、PDF 子进程及 QML 界面；成功后才生成安装包。重新打包已有 `dist/EveryTensor` 时可用 `build-windows.cmd --reuse-bundle`，源码改动后应执行完整构建。
+
+完整安装生命周期验证（会在 `build/` 中安装、覆盖安装及卸载测试副本）：
+
+```powershell
+.\.build-venv\Scripts\python.exe tools\verify_windows_installer.py release\windows\EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe
+```
+
+验证使用无 Python 的 PATH 和带中文、空格的安装目录，并检查卸载保留用户数据。为保护已有安装，若当前账户已注册 EveryTensor，验证会拒绝执行；请使用干净的 Windows 账户或虚拟机。GitHub Actions 的 `Build Windows installer` 工作流也可手动生成并验证构建产物，不自动发布 Release。
+
+在禁止写注册表或开始菜单的构建沙箱中，可为验证命令添加 `--isolated`。该模式使用安装器的 `/ISOLATED=1` 参数，只安装文件和本地卸载器，不创建快捷方式或 Windows 卸载注册项；报告会标明这些未验证项目。普通安装保持正常的开始菜单和系统卸载注册行为。
 
 ## 许可证
 

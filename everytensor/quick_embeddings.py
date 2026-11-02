@@ -23,7 +23,8 @@ def sha256_file(path):
 
 
 def bundled_path():
-    return Path(__file__).resolve().parents[1] / 'models' / 'quick-semantic'
+    from .paths import resource_root
+    return resource_root() / 'models' / 'quick-semantic'
 
 
 def available(path=None):

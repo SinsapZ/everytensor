@@ -1,0 +1,9 @@
+# Optional CPU runtime; downloaded only when the user enables multimodal search.
+torch==2.11.0
+torchvision==0.26.0
+transformers==5.19.0
+sentence-transformers==6.1.0
+numpy==2.4.6
+Pillow==12.2.0
+PyMuPDF==1.27.2.3
+tokenizers==0.23.3

@@ -35,6 +35,11 @@ def reference(row):
 
 def find_app(*names):
     for name in names:
+        if name in ('ffplay', 'ffplay.exe'):
+            from .media import executable
+            managed = executable('ffplay')
+            if Path(managed).is_file():
+                return managed
         found = shutil.which(name)
         if found and Path(found).suffix.lower() not in ('.cmd', '.bat'):
             return found

@@ -3,11 +3,13 @@ import argparse
 import json
 import multiprocessing
 from pathlib import Path
+from .paths import default_data
 
 
 def main():
     parser = argparse.ArgumentParser(description='EveryTensor 本地文件搜索')
-    parser.add_argument('--data', default=str(Path(__file__).resolve().parent.parent/'.everytensor'))
+    parser.add_argument('--data', default=str(default_data()))
+    parser.add_argument('--self-test', metavar='REPORT', help='在隔离目录验证安装包并写入 JSON 报告')
     parser.add_argument('--index', metavar='FOLDER', help='增量索引文件夹后退出，不加载模型')
     parser.add_argument('--query', help='命令行文件名及关键词检索')
     parser.add_argument('--doctor', action='store_true')
@@ -16,6 +18,12 @@ def main():
     parser.add_argument('--budget-gib', type=float, help='索引空间预算，不含模型')
     parser.add_argument('--legacy-ui', action='store_true', help='打开旧版 Tk 界面')
     args = parser.parse_args()
+    from .paths import frozen
+    if frozen() and args.legacy_ui:
+        parser.error('Windows 安装版使用 Qt 界面；旧版界面仅在源码版提供')
+    if args.self_test:
+        from .self_test import run
+        return run(Path(args.self_test))
     data = Path(args.data).resolve()
     def desktop():
         if args.legacy_ui:

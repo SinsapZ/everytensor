@@ -24,8 +24,10 @@ RETRY_SECONDS = 60
 
 def resolve_model(db, default=None):
     if default is None:
+        from .paths import frozen, resource_root
         database = Path(db.execute('PRAGMA database_list').fetchone()[2])
-        default = database.resolve().parent.parent / 'models' / 'quick-semantic'
+        root = resource_root() if frozen() else database.resolve().parent.parent
+        default = root / 'models' / 'quick-semantic'
     for value in (store.setting(db, 'quick_model', ''), default):
         if not value:
             continue

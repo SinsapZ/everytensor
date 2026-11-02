@@ -22,7 +22,13 @@ File types include TXT, Markdown, source code, PDF, DOCX, PPTX, XLSX, EPUB, imag
 
 The index stores file information for search. Files become searchable by name as the app finds them. To search content, the app must first read that content.
 
-## Requirements
+## Windows installer
+
+Run [EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.3/EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe) on Windows 10 1809 or later (64-bit), then open EveryTensor from Start. This per-user installer includes Python, desktop dependencies and the lightweight text model; installation and text search work offline. At first launch, or later in Settings > Multimodal search, install the optional model and CPU runtime (about 1.88 GB, including FFmpeg). Downloads run in the background, support pause/resume and retry, and are checked against pinned SHA-256 hashes. You can also import an existing compatible model. All four modalities are validated before activation; no separate Python installation is needed. Allow at least 5 GiB of free space. Components are kept under the user data directory in `multimodal/`, outside the index budget; subsequent search stays offline.
+
+Settings, logs and indexes are stored in `%LOCALAPPDATA%\EveryTensor\.everytensor` and survive upgrades and uninstall. Existing source-install data is not migrated automatically. The first launch searches accessible fixed drives; use `Ctrl+,` to limit the scope. Local artifacts and SHA-256 checksums are in `release/windows/`. This build is unsigned. See [the build instructions](README.md#构建-windows-安装包) to reproduce and verify it.
+
+## Source requirements
 
 - 64-bit Windows.
 - Python 3.11. During Python installation, select “Add python.exe to PATH”.
@@ -30,9 +36,9 @@ The index stores file information for search. Files become searchable by name as
 
 For audio and video, install [FFmpeg](https://ffmpeg.org/download.html). Make sure that the `ffmpeg`, `ffprobe`, and `ffplay` commands work in a terminal.
 
-## Install and start
+## Install and start from source
 
-This preview runs from source. The steps below use the `main` branch with the latest changes. The published [v0.1.0-alpha.1 release](https://github.com/SinsapZ/everytensor/releases/tag/v0.1.0-alpha.1) retains its original contents and does not include later updates.
+These steps run the source version, including the optional full multimodal model. The published [v0.1.0-alpha.1 release](https://github.com/SinsapZ/everytensor/releases/tag/v0.1.0-alpha.1) retains its original contents and does not include later updates.
 
 1. Download the [latest source ZIP](https://github.com/SinsapZ/everytensor/archive/refs/heads/main.zip).
 2. Extract the ZIP to a folder where you have write permission.

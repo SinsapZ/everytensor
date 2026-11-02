@@ -22,7 +22,13 @@ Windows プレビュー版 · main 開発版
 
 インデックスは、検索に使うファイル情報を保存します。アプリが見つけたファイルは、名前で検索できるようになります。内容を検索するには、先にアプリがその内容を読み取る必要があります。
 
-## 動作環境
+## Windows インストーラー
+
+Windows 10 1809 以降の 64 ビット環境では [EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.3/EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe) を実行できます。Python、デスクトップ依存関係、軽量テキストモデルを同梱し、インストールとテキスト検索はオフラインで利用できます。初回起動時、または設定のマルチモーダル検索から、モデル・CPU 実行環境・FFmpeg を追加できます（約 1.88 GB、空き容量 5 GiB 以上を推奨）。バックグラウンドダウンロード、一時停止と再開、再試行、既存モデルの読み込みに対応しています。SHA-256 と各モダリティの動作を検証してから有効になります。Python の別途インストールは不要で、その後の検索はオフラインで動作します。
+
+設定とインデックスは `%LOCALAPPDATA%\EveryTensor\.everytensor` に保存され、更新・アンインストール後も残ります。初回はアクセス可能な固定ドライブ全体が検索対象です。`Ctrl+,` で範囲を変更できます。ローカル成果物とチェックサムは `release/windows/` にあります。このビルドは未署名です。
+
+## ソース版の動作環境
 
 - 64 ビット版 Windows。
 - Python 3.11。Python のインストール時に「Add python.exe to PATH」を選択してください。
@@ -30,7 +36,7 @@ Windows プレビュー版 · main 開発版
 
 音声や動画を使う場合は、[FFmpeg](https://ffmpeg.org/download.html) をインストールしてください。ターミナルで `ffmpeg`、`ffprobe`、`ffplay` コマンドを実行できることを確認してください。
 
-## インストールと起動
+## ソース版のインストールと起動
 
 このプレビュー版はソースコードから実行します。以下の手順では、最新の変更を含む `main` ブランチを使用します。公開済みの [v0.1.0-alpha.1](https://github.com/SinsapZ/everytensor/releases/tag/v0.1.0-alpha.1) は公開時の内容を維持しており、その後の更新は含まれません。
 

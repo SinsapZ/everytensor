@@ -35,6 +35,7 @@ class Controller(QObject):
     notification = Signal(str)
     rowsAboutToChange = Signal()
     rowsChanged = Signal()
+    _modelActivated = Signal(str)
 
     def __init__(self, data: Path, start_backend=True, parent=None):
         super().__init__(parent)
@@ -42,13 +43,17 @@ class Controller(QObject):
         self.data.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data/'index.sqlite3'
         self.db = store.connect(self.db_path)
+        self._modelActivated.connect(self._finish_model_activation)
+        self._activating_model = False
         catalog.initialize_scope(self.db, self.data)
         if start_backend:
             # A custom --data directory still uses the bundled local models;
             # this only inspects manifests and never imports the inference stack.
             from . import quick_index
             bundled = Path(__file__).resolve().parent.parent/'models'
-            store.resolve_model(self.db, bundled/'embeddinggemma-2')
+            from .model_install import installed_configuration
+            installed = installed_configuration(self.data)
+            store.resolve_model(self.db, installed['model'] if installed else bundled/'embeddinggemma-2')
             quick_index.resolve_model(self.db, bundled/'quick-semantic')
         self.log = logging.getLogger(f'everytensor.client.{id(self)}')
         self._log_handler = RotatingFileHandler(self.data/'ui.log', maxBytes=2*1024**2,
@@ -670,6 +675,48 @@ class Controller(QObject):
         if (self._dirty and (self._query.strip() or self._kind) and not self._debounce.isActive()
                 and not self._waiting_refresh() and time.monotonic()-self._last_refresh >= 1.):
             self._refresh()
+
+    @Slot(str)
+    def _finish_model_activation(self, path):
+        if self._closing:
+            return
+        self._activating_model = False
+        try:
+            pending = list(self.commands.messages) if isinstance(self.commands, NullBackend) else []
+            store.set_setting(self.db, 'model', path)
+            self._settings = self._read_settings()
+            self.events = queue.Queue()
+            self.commands = Backend(self.db_path, self.events)
+            for command in pending:
+                self.commands.put(command)
+            if self._settings_request and not any(c.get('action') == 'configure' for c in pending):
+                self.commands.put({'action': 'configure', 'settings': self._settings_request})
+            self._model_state, self._model_status = 'preparing', '正在启用多模态搜索'
+            self._inflight = False
+            self._dirty = True
+            if self._paused:
+                self.commands.put({'action': 'pause', 'value': True})
+            self.notification.emit('多模态模型已安装，正在准备图片和音视频搜索')
+        except Exception as exc:
+            self._warning = '启动多模态搜索失败，请重新打开应用：' + str(exc)
+            self._settings_applying = False
+            self._settings_error = self._warning
+        self.stateChanged.emit()
+
+    @Slot(str)
+    def activateInstalledModel(self, path):
+        if self._closing or self._activating_model:
+            return
+        self._activating_model = True
+        previous = self.commands
+        self.commands = NullBackend()
+        self._inflight = False
+        self._model_status = '正在启用多模态搜索；文件名和正文搜索可用'
+        self.stateChanged.emit()
+        def replace():
+            previous.close(wait=True)
+            self._modelActivated.emit(path)
+        threading.Thread(target=replace, name='activate-model-backend').start()
 
     @Slot()
     def close(self):

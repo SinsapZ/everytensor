@@ -24,6 +24,7 @@ Dialog {
         budgetField.text = String(draft.budget_gib || 8);
     }
     onClosed: appliedTimer.stop()
+    Connections { target: modelSetup; function onInstalled(path) { dialog.edit("model", path); } }
     function edit(key, value) { var next = Object.assign({}, draft); next[key] = value; draft = next; }
     function addFolder(key) { var path = desktop.chooseFolder(); if(path) { var values = (draft[key] || []).slice(); if(values.indexOf(path) < 0) values.push(path); edit(key, values); } }
     function removeFolder(key, index) { var values = (draft[key] || []).slice(); values.splice(index, 1); edit(key, values); }
@@ -137,16 +138,27 @@ Dialog {
                         }
                     }
                 }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 12
+                    ColumnLayout {
+                        Layout.fillWidth: true; spacing: 5
+                        Text { text: "多模态搜索"; color: Theme.ink; font.family: Theme.family; font.pixelSize: 14; font.weight: Font.DemiBold }
+                        Text { text: modelSetup.ready ? "模型已就绪，可分析图片、录音和视频。" : modelSetup.active ? "正在安装，轻量搜索可继续使用。" : "安装模型，让搜索理解图片、录音和视频。"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    }
+                    DeskButton { objectName: "modelSetupButton"; text: modelSetup.ready ? "查看模型" : modelSetup.active ? "查看安装进度" : "安装模型"; onClicked: window.openModelSetup() }
+                }
                 DeskButton { objectName: "advancedSettingsButton"; text: dialog.advanced ? "收起高级设置" : "高级设置"; iconName: "down"; subtle: true; onClicked: dialog.advanced = !dialog.advanced }
                 ColumnLayout {
                     visible: dialog.advanced; Layout.fillWidth: true; spacing: 12
                     RowLayout {
+                        visible: desktop.fullModelSupported
                         Text { text: "向量维度"; color: Theme.ink; font.family: Theme.family; font.pixelSize: 13; Layout.fillWidth: true }
                         Repeater { model: [256, 512, 768]; delegate: DeskButton { required property int modelData; text: String(modelData); compact: true; primary: Number(dialog.draft.dimensions || 256) === modelData; onClicked: dialog.edit("dimensions", modelData) } }
                     }
-                    Text { text: "256 维占用更少空间。提高维度需要在后台重新编码。"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                    DeskButton { text: "选择本地模型"; iconName: "folder"; onClicked: { var path = desktop.chooseFolder(); if(path) dialog.edit("model", path); } }
-                    Text { text: dialog.draft.model || "尚未指定模型文件夹"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
+                    Text { visible: desktop.fullModelSupported; text: "256 维占用更少空间。提高维度需要在后台重新编码。"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    DeskButton { visible: desktop.fullModelSupported; text: "选择本地模型"; iconName: "folder"; onClicked: { var path = desktop.chooseFolder(); if(path) dialog.edit("model", path); } }
+                    Text { visible: desktop.fullModelSupported; text: dialog.draft.model || "尚未指定模型文件夹"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
+                    Text { visible: !desktop.fullModelSupported; text: "已内置 256 维轻量文字模型。通过上方的多模态搜索安装环节，可启用图片和音视频内容搜索。"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     Text { text: "搜索和内容分析在本机完成，原文件始终只读。"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line; Layout.topMargin: 4; Layout.bottomMargin: 4 }
                     Text { text: "覆盖详情"; color: Theme.ink; font.family: Theme.family; font.pixelSize: 14; font.weight: Font.DemiBold }

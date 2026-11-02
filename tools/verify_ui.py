@@ -63,6 +63,7 @@ class DesktopInteractionTests(unittest.TestCase):
 
     def setUp(self):
         self.js('resultMenu.close()')
+        self.js('modelSetupDialog.close()')
         self.js('settingsDialog.close()')
         QTest.qWait(140)
         self.window.setWidth(1280)
@@ -306,6 +307,88 @@ class DesktopInteractionTests(unittest.TestCase):
             QTest.mouseDClick(self.window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
             self.wait_until(lambda: bool(opened))
         self.assertEqual(opened, [2])
+
+    def test_16_model_setup_flow_and_compact_layout(self):
+        manager = self.runtime.model_setup
+        manager._state.update(phase='needed', detail='', error='', received=0)
+        manager.changed.emit()
+        self.window.setWidth(920)
+        self.window.setHeight(620)
+        self.js('window.openSettings()')
+        QTest.qWait(220)
+        flick = self.item('settingsScroll').property('contentItem')
+        flick.setProperty('contentY', max(0, flick.property('contentHeight') - flick.height()))
+        QTest.qWait(80)
+        self.click('modelSetupButton')
+        QTest.qWait(120)
+        self.assertTrue(self.item('modelSetupDialog').property('opened'))
+        button = self.item('startModelButton')
+        point = button.mapToScene(QPointF(button.width(), button.height()))
+        self.assertLessEqual(point.x(), self.window.width())
+        self.assertLessEqual(point.y(), self.window.height())
+        self.capture('model-setup-compact')
+        with patch.object(manager, '_start') as start:
+            self.click('startModelButton')
+            start.assert_called_once_with(None)
+        manager._events.put(('progress', dict(phase='downloading', received=12345678, total=23456789,
+                                             detail='正在下载模型')))
+        manager.poll()
+        QTest.qWait(60)
+        self.assertFalse(button.property('visible'))
+        self.click('pauseModelButton')
+        self.assertTrue(manager._cancel.is_set())
+        manager._events.put(('paused', None))
+        manager.poll()
+        QTest.qWait(60)
+        self.assertEqual(button.property('text'), '继续安装')
+        self.capture('model-setup-paused')
+        manager._events.put(('error', '测试网络断开，已保存进度'))
+        manager.poll()
+        QTest.qWait(60)
+        self.assertEqual(button.property('text'), '重试')
+        self.assertTrue(self.item('modelInstallError').property('visible'))
+        self.click('deferModelButton')
+        QTest.qWait(100)
+        self.assertFalse(self.item('modelSetupDialog').property('visible'))
+        self.assertTrue(manager.state['seen'])
+        self.assertFalse(manager.shouldOffer)
+
+    def test_17_first_launch_prompt_can_be_skipped(self):
+        runtime = create_desktop(self.root / 'first-launch', start_backend=False,
+                                 restore_geometry=False, offer_setup=True)
+        try:
+            QTest.qWait(180)
+            dialog = runtime.window.findChild(QObject, 'modelSetupDialog')
+            self.assertTrue(dialog.property('opened'))
+            runtime.model_setup.dismiss()
+        finally:
+            runtime.close()
+        runtime = create_desktop(self.root / 'first-launch', start_backend=False,
+                                 restore_geometry=False, offer_setup=True)
+        try:
+            QTest.qWait(100)
+            self.assertFalse(runtime.model_setup.shouldOffer)
+            self.assertFalse(runtime.window.findChild(QObject, 'modelSetupDialog').property('visible'))
+        finally:
+            runtime.close()
+
+    def test_18_activation_preserves_pending_settings(self):
+        from everytensor.client import Controller
+        from everytensor.backend import NullBackend
+        from everytensor import store
+        client = Controller(self.root / 'activation', start_backend=False)
+        transport = NullBackend()
+        try:
+            with patch('everytensor.client.Backend', return_value=transport):
+                client.activateInstalledModel(str(self.root / 'installed-model'))
+                client.applySettings(dict(scope='folders', roots=[str(self.root)], budget_gib=4))
+                client.pauseIndexing(True)
+                self.wait_until(lambda: client.commands is transport)
+                self.assertTrue(any(c['action'] == 'configure' for c in transport.messages))
+                self.assertTrue(any(c['action'] == 'pause' and c['value'] for c in transport.messages))
+                self.assertEqual(store.setting(client.db, 'model'), str(self.root / 'installed-model'))
+        finally:
+            client.close()
 
     def test_90_capture(self):
         self.capture('results-wide')

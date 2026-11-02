@@ -14,6 +14,7 @@ import queue
 import subprocess
 import sys
 import threading
+from .paths import worker_command, resource_root
 
 MAX_BYTES = 40 * 1024 * 1024
 MAX_HEADER = 128 * 1024
@@ -53,14 +54,11 @@ def _exact(stream, size):
 
 class _Session:
     def __init__(self):
-        executable = Path(sys.executable)
-        if executable.stem.lower() == 'pythonw':
-            executable = executable.with_name('python.exe')
         self.process = subprocess.Popen(
-            [str(executable), '-u', '-m', 'everytensor.pdf_render'],
+            worker_command('pdf'),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
-            cwd=Path(__file__).resolve().parent.parent,
+            cwd=resource_root(),
         )
         self.responses = queue.Queue()
         self.requests = queue.Queue()

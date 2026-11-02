@@ -10,6 +10,7 @@ import sys
 import threading
 
 from . import media
+from .paths import worker_command, resource_root
 
 
 class Backend:
@@ -20,13 +21,11 @@ class Backend:
         self.log = log_path.open('a', encoding='utf-8')
         self.closing = False
         self._outgoing = queue.Queue()
-        executable = Path(sys.executable)
-        if executable.stem.lower() == 'pythonw':
-            executable = executable.with_name('python.exe')
-        self.process = subprocess.Popen([str(executable), '-u', '-m', 'everytensor.engine', str(db_path)],
+        from .model_install import component_root, runtime_environment
+        self.process = subprocess.Popen(worker_command('engine', db_path),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
             text=True, encoding='utf-8', bufsize=1, creationflags=media.FLAGS,
-            cwd=Path(__file__).resolve().parent.parent)
+            cwd=resource_root(), env=runtime_environment(component_root(Path(db_path).parent)))
 
         def read():
             try:

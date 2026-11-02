@@ -21,6 +21,16 @@ FLAGS = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
 PDF_LOCK = threading.RLock()
 
 
+def executable(name):
+    """Use the optional, app-local media tools without changing the user's PATH."""
+    root = os.environ.get('EVERYTENSOR_COMPONENTS')
+    if root:
+        candidate = Path(root) / 'ffmpeg' / 'bin' / (name + '.exe')
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which(name) or name
+
+
 def kind(path):
     ext = Path(path).suffix.lower()
     if ext in CODE:
@@ -37,6 +47,8 @@ def kind(path):
 
 
 def run(args, timeout=90):
+    if args and args[0] in ('ffmpeg', 'ffprobe', 'ffplay'):
+        args = [executable(args[0]), *args[1:]]
     proc = subprocess.run(args, capture_output=True, timeout=timeout, creationflags=FLAGS)
     if proc.returncode:
         raise RuntimeError(proc.stderr.decode('utf-8', 'replace')[-700:])
@@ -85,9 +97,9 @@ def video_frames(path, start, end):
 
 
 def play(path, second=0):
-    if not shutil.which('ffplay'):
+    if not Path(executable('ffplay')).is_file():
         raise RuntimeError('需要 ffplay 才能从命中时间播放，请安装 FFmpeg 并加入 PATH。')
-    return subprocess.Popen(['ffplay', '-loglevel', 'error', '-autoexit', '-ss', str(second),
+    return subprocess.Popen([executable('ffplay'), '-loglevel', 'error', '-autoexit', '-ss', str(second),
                              '-window_title', Path(path).name, '-x', '960', '-i', str(path)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=FLAGS)
 

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog
 from .client import Controller
 from .preview_service import ImageStore, ThumbnailProvider, PreviewService
 from .pdf_render import PdfRenderer
+from .paths import frozen
 
 
 def reduced_motion():
@@ -63,6 +64,7 @@ class DesktopActions(QObject):
 
     reducedMotion = Property(bool, lambda s: s._reduced, constant=True)
     fontFamily = Property(str, lambda s: s._family, constant=True)
+    fullModelSupported = Property(bool, lambda s: not frozen(), constant=True)
 
     @Slot(result=str)
     def chooseFolder(self):
@@ -82,11 +84,13 @@ class DesktopRuntime:
     desktop: DesktopActions
     window: object
     warnings: list
+    model_setup: object
 
     def close(self):
         if getattr(self, '_closed', False):
             return
         self._closed = True
+        self.model_setup.close()
         self.preview.close()
         self.client.close()
         # QML bindings must be destroyed while their Python context objects are
@@ -99,7 +103,7 @@ class DesktopRuntime:
             self._log_handler.close()
 
 
-def create_desktop(data, *, start_backend=True, restore_geometry=True):
+def create_desktop(data, *, start_backend=True, restore_geometry=True, offer_setup=None):
     data = Path(data).resolve()
     data.mkdir(parents=True, exist_ok=True)
     QQuickStyle.setStyle('Basic')
@@ -120,6 +124,9 @@ def create_desktop(data, *, start_backend=True, restore_geometry=True):
     font.setPixelSize(14)
     app.setFont(font)
     client = Controller(data, start_backend=start_backend)
+    from .model_setup import ModelSetup
+    model_setup = ModelSetup(data, offer=(frozen() and start_backend) if offer_setup is None else offer_setup, parent=engine)
+    model_setup.installed.connect(client.activateInstalledModel)
     images = ImageStore()
     pdf_renderer = PdfRenderer()
     thumbnails = ThumbnailProvider(pdf_renderer)
@@ -134,6 +141,7 @@ def create_desktop(data, *, start_backend=True, restore_geometry=True):
     context.setContextProperty('client', client)
     context.setContextProperty('preview', preview)
     context.setContextProperty('desktop', desktop)
+    context.setContextProperty('modelSetup', model_setup)
     warnings = []
     def qml_warnings(items):
         for item in items:
@@ -143,13 +151,14 @@ def create_desktop(data, *, start_backend=True, restore_geometry=True):
     qml = Path(__file__).with_name('qml') / 'Main.qml'
     engine.load(QUrl.fromLocalFile(str(qml)))
     if not engine.rootObjects():
+        model_setup.close()
         preview.close()
         client.close()
         raise RuntimeError('Qt Quick 界面加载失败：' + '\n'.join(warnings))
     window = engine.rootObjects()[0]
     preview.setScale(window.devicePixelRatio())
     window.screenChanged.connect(lambda _: preview.setScale(window.devicePixelRatio()))
-    runtime = DesktopRuntime(app, engine, client, preview, desktop, window, warnings)
+    runtime = DesktopRuntime(app, engine, client, preview, desktop, window, warnings, model_setup)
     runtime._logger, runtime._log_handler = log, handler
     # Retain providers while Qt owns their C++ objects.
     runtime.images, runtime.thumbnails = images, thumbnails

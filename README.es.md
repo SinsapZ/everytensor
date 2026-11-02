@@ -22,7 +22,13 @@ Los formatos incluyen TXT, Markdown, código fuente, PDF, DOCX, PPTX, XLSX, EPUB
 
 El índice guarda información de los archivos para las búsquedas. Puedes buscar cada archivo por su nombre cuando la aplicación lo encuentra. Para buscar contenido, la aplicación debe leerlo primero.
 
-## Requisitos
+## Instalador para Windows
+
+Ejecuta [EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.3/EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe) en Windows 10 1809 o posterior de 64 bits. Incluye Python, las dependencias de escritorio y el modelo de texto ligero; la instalación y la búsqueda de texto funcionan sin conexión. En el primer inicio, o desde la búsqueda multimodal de Ajustes, puedes instalar el modelo, el entorno de CPU y FFmpeg (unos 1,88 GB; reserva al menos 5 GiB libres). Permite descargar en segundo plano, pausar y reanudar, reintentar e importar un modelo compatible. Comprueba SHA-256 y las cuatro modalidades antes de activarlo. No hace falta instalar Python por separado; las búsquedas posteriores funcionan sin conexión.
+
+Los ajustes y el índice se guardan en `%LOCALAPPDATA%\EveryTensor\.everytensor` y se conservan al actualizar o desinstalar. El primer inicio busca en las unidades locales fijas accesibles; cambia el alcance con `Ctrl+,`. Los archivos y sus sumas de comprobación están en `release/windows/`. Esta compilación no tiene firma digital.
+
+## Requisitos para el código fuente
 
 - Windows de 64 bits.
 - Python 3.11. Durante la instalación de Python, selecciona «Add python.exe to PATH».
@@ -30,7 +36,7 @@ El índice guarda información de los archivos para las búsquedas. Puedes busca
 
 Para usar audio y vídeo, instala [FFmpeg](https://ffmpeg.org/download.html). Comprueba que los comandos `ffmpeg`, `ffprobe` y `ffplay` funcionan en una terminal.
 
-## Instalación e inicio
+## Instalación e inicio desde el código fuente
 
 Esta versión preliminar se ejecuta desde el código fuente. Los pasos siguientes usan la rama `main`, que incluye los cambios más recientes. La versión publicada [v0.1.0-alpha.1](https://github.com/SinsapZ/everytensor/releases/tag/v0.1.0-alpha.1) conserva su contenido original y no incluye las actualizaciones posteriores.
 

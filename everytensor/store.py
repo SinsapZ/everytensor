@@ -372,8 +372,10 @@ def resolve_model(db, default=None):
     """Use a saved valid model, or discover the model shipped beside the app."""
     saved = setting(db, 'model', '')
     if default is None:
+        from .paths import frozen, resource_root
         database = db.execute('PRAGMA database_list').fetchone()[2]
-        default = Path(database).resolve().parent.parent/'models/embeddinggemma-2'
+        root = resource_root() if frozen() else Path(database).resolve().parent.parent
+        default = root/'models/embeddinggemma-2'
     for value in (saved, default):
         if not value:
             continue

@@ -78,7 +78,8 @@ def initialize_scope(db, data):
     if store.setting(db, 'scope') is not None:
         return
     roots = store.setting(db, 'roots', [])
-    default = Path(__file__).resolve().parent.parent/'.everytensor'
+    from .paths import default_data
+    default = default_data()
     old_default = Path(data).resolve() == default and compact_roots(roots) == [str(default.parent)]
     store.set_setting(db, 'scope', 'computer' if not roots or old_default else 'folders')
 
@@ -100,6 +101,7 @@ def content_allowed(path, kind, stat=None):
 
 def excluded_paths(db):
     from . import store
+    from .paths import frozen, resource_root
     database = db.execute('PRAGMA database_list').fetchone()[2]
     folder = Path(database).resolve().parent
     own_data = ([str(folder)] if folder.name == '.everytensor' else
@@ -109,7 +111,13 @@ def excluded_paths(db):
                                                 'quick-search.lock')])
     model = store.setting(db, 'model', '')
     quick_model = store.setting(db, 'quick_model', '')
-    bundled = str(Path(__file__).resolve().parents[1]/'models')
+    bundled = str(resource_root()/'models')
+    own_data.extend(str(folder/name) for name in ('multimodal', 'model-setup.json'))
+    if (resource_root()/'model-worker/application.zip').is_file():
+        own_data.append(str(resource_root().parent))
+    if frozen():
+        import sys
+        own_data.append(str(Path(sys.executable).resolve().parent))
     return compact_roots(own_data + [bundled, model, quick_model] + store.setting(db, 'exclusions', []))
 
 

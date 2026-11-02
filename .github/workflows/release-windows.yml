@@ -1,0 +1,87 @@
+name: Publish Windows prerelease
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/releases/v*.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-windows-prerelease
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-windows.yml
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: EveryTensor-windows-x64
+          path: release/windows
+      - name: Verify release version, checksums and installation report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from everytensor import RELEASE_VERSION
+
+          output = Path('release/windows')
+          for name in (f'EveryTensor-{RELEASE_VERSION}-windows-x64-setup.exe',
+                       f'everytensor-{RELEASE_VERSION}-source.zip'):
+              path = output / name
+              expected, recorded_name = path.with_suffix(path.suffix + '.sha256').read_text().strip().split('  ', 1)
+              assert recorded_name == name
+              with path.open('rb') as stream:
+                  assert hashlib.file_digest(stream, 'sha256').hexdigest() == expected, name
+          smoke = json.loads((output / 'self-test.json').read_text())
+          assert smoke['ok'] and smoke['frozen'] and smoke['version'] == RELEASE_VERSION, smoke
+          installed = json.loads((output / 'installer-verification.json').read_text())
+          assert installed['ok'] and not installed['isolated'], installed
+          assert installed['installer'] == f'EveryTensor-{RELEASE_VERSION}-windows-x64-setup.exe'
+          assert 'per_user_install_and_uninstall_registration' in installed['checks']
+          assert Path(f'.github/releases/v{RELEASE_VERSION}.md').is_file()
+          print('Release files and clean Windows installation checks passed.')
+          PY
+      - name: Publish verified Windows assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'from everytensor import RELEASE_VERSION; print(RELEASE_VERSION)')
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; leaving it unchanged."
+            exit 0
+          fi
+          gh release create "$tag" \
+            "release/windows/EveryTensor-$version-windows-x64-setup.exe" \
+            "release/windows/EveryTensor-$version-windows-x64-setup.exe.sha256" \
+            "release/windows/everytensor-$version-source.zip" \
+            "release/windows/everytensor-$version-source.zip.sha256" \
+            release/windows/build-manifest.json \
+            release/windows/self-test.json \
+            release/windows/installer-verification.json \
+            --target "$GITHUB_SHA" \
+            --title "EveryTensor $tag · Windows 安装包" \
+            --notes-file ".github/releases/$tag.md" \
+            --prerelease --draft --latest=false
+          gh release edit "$tag" --draft=false --prerelease --latest=false
