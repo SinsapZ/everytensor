@@ -28,6 +28,8 @@ jobs:
       - name: Verify desktop, freeze and build installer
         shell: pwsh
         run: |
+          .\.build-venv\Scripts\python.exe -X utf8 -m unittest discover -s tests -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           .\.build-venv\Scripts\python.exe -X utf8 tools\verify_model_setup.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           .\.build-venv\Scripts\python.exe -X utf8 tools\verify_ui.py

@@ -10,6 +10,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
+import math
 from pathlib import Path
 import threading
 
@@ -126,6 +127,13 @@ class PreviewService(QObject):
         self._loading = False
         self._duration = self._position = 0.
         self._frames = []
+        self._frame_start = self._frame_end = 0.
+        self._frame_span = 30.
+        self._frame_token = 0
+        self._frame_pending = 0
+        self._frame_cancel = threading.Event()
+        self._frame_jobs = []
+        self._media_identity = None
         self._closed = False
         self._cancel = threading.Event()
         self._pool = ThreadPoolExecutor(1, thread_name_prefix='qt-preview')
@@ -147,6 +155,10 @@ class PreviewService(QObject):
     width = Property(int, lambda s: s._width, notify=changed)
     height = Property(int, lambda s: s._height, notify=changed)
     frames = Property('QVariantList', lambda s: s._frames, notify=changed)
+    frameStart = Property(float, lambda s: s._frame_start, notify=changed)
+    frameEnd = Property(float, lambda s: s._frame_end, notify=changed)
+    frameSpan = Property(float, lambda s: s._frame_span, notify=changed)
+    framesLoading = Property(bool, lambda s: s._frame_pending > 0, notify=changed)
     duration = Property(float, lambda s: s._duration, notify=changed)
     position = Property(float, lambda s: s._position, notify=changed)
     fitWidth = Property(bool, lambda s: s._fit, notify=changed)
@@ -155,7 +167,7 @@ class PreviewService(QObject):
     def setRow(self, row):
         row = dict(row or {})
         # Keep a user-selected time while only ranking/evidence is refreshed.
-        same = row.get('file_id') == self._row.get('file_id') and row.get('path') == self._row.get('path')
+        same = all(row.get(key) == self._row.get(key) for key in ('file_id', 'path', 'size', 'mtime'))
         if row == self._row and self._source:
             return
         self._row = row
@@ -163,7 +175,10 @@ class PreviewService(QObject):
             self._source = self._text = self._error = self._caption = ''
             self._width = self._height = 0
             self._duration = self._position = 0.
+            self._cancel_frames()
             self._frames, self._frame_identity = [], None
+            self._media_identity = None
+            self._frame_start = self._frame_end = 0.
         self._request()
 
     @Slot(int, int)
@@ -192,10 +207,62 @@ class PreviewService(QObject):
     def seek(self, second):
         if not self._row or self._row.get('kind') not in ('video', 'audio'):
             return
+        if not math.isfinite(second) or self._duration <= 0:
+            return
         second = max(0., min(max(0., self._duration - .05), second))
         loc = dict(self._row.get('location', {}), start=second,
                    end=min(self._duration, second + 8), duration=self._duration)
         self.locationChanged.emit(loc)
+
+    @Slot(float)
+    def setFrameSpan(self, seconds):
+        """Choose 10/30/120 seconds or zero for a whole-video overview."""
+        if seconds not in (0., 10., 30., 120.) or seconds == self._frame_span:
+            return
+        self._frame_span = seconds
+        self._update_frame_range(center=self._position)
+
+    @Slot(int)
+    def moveFrameRange(self, direction):
+        if self._frame_span > 0 and direction in (-1, 1):
+            self._update_frame_range(start=self._frame_start + direction * self._frame_span)
+
+    @Slot()
+    def focusFrameRange(self):
+        self._update_frame_range(center=self._position)
+
+    def _cancel_frames(self):
+        self._frame_token += 1
+        self._frame_cancel.set()
+        for job in self._frame_jobs:
+            job.cancel()
+        self._frame_jobs.clear()
+        self._frame_pending = 0
+
+    def _update_frame_range(self, *, center=None, start=None):
+        if not self._media_identity or self._duration <= 0:
+            self.changed.emit()
+            return
+        span = min(self._duration, self._frame_span or self._duration)
+        if start is None:
+            start = (self._position if center is None else center) - span / 2
+        start = max(0., min(self._duration - span, start))
+        end = start + span
+        identity = (*self._media_identity, start, end)
+        if identity == self._frame_identity:
+            return
+        self._cancel_frames()
+        self._frame_start, self._frame_end = start, end
+        self._frame_identity = identity
+        self._frame_cancel = threading.Event()
+        # Stable slots avoid shifting click targets as workers finish out of order.
+        # Sample the interior of each interval, never the undecodable EOF itself.
+        self._frames = [dict(index=i, second=start + span * (i + .5) / 8,
+                             label=media.timestamp(start + span * (i + .5) / 8),
+                             source='', failed=False) for i in range(8)]
+        self._frame_pending = len(self._frames)
+        self.changed.emit()
+        self._make_frames(self._frame_token, self._media_identity, self._frame_cancel)
 
     @Slot()
     def open(self):
@@ -254,12 +321,39 @@ class PreviewService(QObject):
         result = {'text': text, 'location': loc, 'version': version, 'path': str(path)}
         if row.get('kind') in ('video', 'audio') and not loc.get('duration'):
             loc['duration'] = media.probe(path)
+        if row.get('kind') in ('video', 'audio'):
+            duration = float(loc.get('duration', 0))
+            duration = max(0., duration) if math.isfinite(duration) else 0.
+            second = float(loc.get('start', 0))
+            loc['duration'] = duration
+            loc['start'] = min(max(0., duration - .05), max(0., second)) if math.isfinite(second) else 0.
+            if 'end' in loc:
+                end = float(loc['end'])
+                loc['end'] = min(duration, max(loc['start'], end)) if math.isfinite(end) else duration
         if row.get('kind') == 'audio':
             result['text'] = '音频内容 · 从命中位置播放'
         if path.suffix.lower() == '.pdf':
             result['image'] = pdf_image(self.pdf_renderer, path, loc.get('page', 1), bounds)
         elif row.get('kind') in ('image', 'video'):
-            result['image'] = qimage(media.preview_image(path, loc, bounds))
+            try:
+                result['image'] = qimage(media.preview_image(path, loc, bounds))
+            except Exception:
+                # A container can end after the final presentation timestamp.
+                # Seek back near EOF instead of showing a failed/old preview.
+                if row.get('kind') != 'video' or not 0 < loc.get('duration', 0) - loc.get('start', 0) <= 2:
+                    raise
+                for offset in (.5, 2., 10.):
+                    second = max(0., loc['duration'] - offset)
+                    if second >= loc['start'] or cancel.is_set():
+                        continue
+                    try:
+                        result['image'] = qimage(media.preview_image(path, dict(loc, start=second), bounds))
+                        loc['start'] = second
+                        break
+                    except Exception:
+                        pass
+                else:
+                    raise
         elif row.get('kind') == 'audio':
             result['text'] = '音频内容 · 从命中位置播放'
         elif not text and row.get('kind') in ('document', 'code'):
@@ -290,8 +384,10 @@ class PreviewService(QObject):
         if loc != self._row.get('location', {}):
             self._row['location'] = dict(loc)
             self.locationResolved.emit(dict(loc))
-        self._duration = float(loc.get('duration', 0))
-        self._position = float(loc.get('start', 0))
+        duration = float(loc.get('duration', 0))
+        self._duration = max(0., duration) if math.isfinite(duration) else 0.
+        position = float(loc.get('start', 0))
+        self._position = min(self._duration, max(0., position)) if math.isfinite(position) else 0.
         from .locations import label
         self._caption = label(loc)
         image = result.get('image')
@@ -304,23 +400,28 @@ class PreviewService(QObject):
         self.changed.emit()
         if self._row.get('kind') == 'video':
             identity = (result['path'], result['version'])
-            # Scrubbing does not restart eight already completed decodes.
-            if identity != self._frame_identity or len(self._frames) != 8:
-                self._frame_identity = identity
-                self._frames = []
-                self._make_frames(token, identity, self._duration, self._cancel)
+            changed_media = identity != self._media_identity
+            self._media_identity = identity
+            if changed_media or not self._frames or not self._frame_start <= self._position <= self._frame_end:
+                self._update_frame_range(center=self._position)
 
-    def _make_frames(self, token, identity, duration, cancel):
+    def _make_frames(self, token, identity, cancel):
         path, version = identity
-        def decode(index):
+        def decode(index, second):
             if cancel.is_set():
                 return None
-            second = max(0., duration * index / 8)
-            image = qimage(media.preview_image(path, {'start': second}, (176, 100)))
+            try:
+                image = qimage(media.preview_image(path, {'start': second}, (176, 100)))
+                current = Path(path).stat()
+                if (current.st_size, current.st_mtime_ns) != version:
+                    return index, second, None
+            except Exception:
+                log.debug('Filmstrip frame unavailable', exc_info=True)
+                image = None
             return index, second, image
-        for index in range(8):
-            future = self._frame_pool.submit(decode, index)
-            self._jobs.append(future)
+        for frame in self._frames:
+            future = self._frame_pool.submit(decode, frame['index'], frame['second'])
+            self._frame_jobs.append(future)
             def ready(job):
                 if cancel.is_set() or self._closed:
                     return
@@ -334,19 +435,20 @@ class PreviewService(QObject):
 
     @Slot(int, object)
     def _frame_complete(self, token, value):
-        if token != self._token or self._closed:
+        if token != self._frame_token or self._closed:
             return
         index, second, image = value
-        source = self.images.put(f'frame-{token}-{index}', image)
-        self._frames.append({'index': index, 'second': second,
-                             'label': media.timestamp(second), 'source': source})
-        self._frames.sort(key=lambda f: f['index'])
+        source = self.images.put(f'frame-{token}-{index}', image) if image is not None else ''
+        self._frames[index] = dict(index=index, second=second, label=media.timestamp(second),
+                                   source=source, failed=image is None)
+        self._frame_pending = max(0, self._frame_pending - 1)
         self.changed.emit()
 
     def close(self):
         self._closed = True
         self._resize.stop()
         self._cancel.set()
+        self._cancel_frames()
         self.pdf_renderer.close()
         for future in self._jobs:
             future.cancel()

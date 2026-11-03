@@ -4,7 +4,7 @@
 
 **简体中文** | [English](README.en.md) | [日本語](README.ja.md) | [Español](README.es.md)
 
-Windows 预览版 · v0.1.0-alpha.3
+Windows 源码开发版 · v0.1.0-alpha.4
 
 所有文件，都是向量。
 
@@ -23,6 +23,8 @@ Windows 预览版 · v0.1.0-alpha.3
 索引记录文件信息，供搜索使用。应用发现文件后，就可以按名称搜索。按内容搜索前，应用需要先读取相应内容。
 
 ## Windows 安装包
+
+下方链接为已发布的 v0.1.0-alpha.3。从当前源码构建会生成 `release/windows/EveryTensor-0.1.0-alpha.4-windows-x64-setup.exe`。
 
 双击 [EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.3/EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe)，按向导安装后，从开始菜单打开 EveryTensor。支持 Windows 10 1809 及以上的 64 位系统，安装到当前用户，无需管理员权限。
 

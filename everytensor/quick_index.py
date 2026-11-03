@@ -18,7 +18,7 @@ from . import catalog, storage, store
 from .cache import ByteCache
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 RETRY_SECONDS = 60
 
 
@@ -60,6 +60,8 @@ def install(db):
       PRIMARY KEY(kind,source_id));
     CREATE INDEX IF NOT EXISTS quick_model_kind ON quick_vectors(model,kind);
     CREATE TABLE IF NOT EXISTS quick_state(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS quick_dirty(
+      kind TEXT NOT NULL,source_id INTEGER NOT NULL,PRIMARY KEY(kind,source_id)) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS quick_retry(
       source_id INTEGER PRIMARY KEY REFERENCES units(id) ON DELETE CASCADE,
       digest TEXT NOT NULL,path TEXT NOT NULL,size INTEGER,mtime INTEGER,retry_at REAL NOT NULL);
@@ -103,7 +105,37 @@ def install(db):
       DELETE FROM quick_retry WHERE source_id=old.id;
       UPDATE quick_state SET value=CAST(value AS INTEGER)+1 WHERE key='revision';
     END;
-    INSERT OR REPLACE INTO quick_state VALUES('schema_version','2');
+    -- Track changes only once a dense base exists. Repeated edits occupy one
+    -- entry, and deletes remain tombstones until the next base is published.
+    CREATE TRIGGER IF NOT EXISTS quick_vector_delta_insert AFTER INSERT ON quick_vectors BEGIN
+      INSERT OR IGNORE INTO quick_dirty SELECT new.kind,new.source_id
+        WHERE EXISTS(SELECT 1 FROM quick_state WHERE key='dense_base_revision');
+      UPDATE quick_state SET value=CAST(value AS INTEGER)+1 WHERE key='revision';
+    END;
+    CREATE TRIGGER IF NOT EXISTS quick_vector_delta_delete AFTER DELETE ON quick_vectors BEGIN
+      INSERT OR IGNORE INTO quick_dirty SELECT old.kind,old.source_id
+        WHERE EXISTS(SELECT 1 FROM quick_state WHERE key='dense_base_revision');
+      UPDATE quick_state SET value=CAST(value AS INTEGER)+1 WHERE key='revision';
+    END;
+    CREATE TRIGGER IF NOT EXISTS quick_vector_delta_update AFTER UPDATE ON quick_vectors BEGIN
+      INSERT OR IGNORE INTO quick_dirty SELECT old.kind,old.source_id
+        WHERE EXISTS(SELECT 1 FROM quick_state WHERE key='dense_base_revision');
+      INSERT OR IGNORE INTO quick_dirty SELECT new.kind,new.source_id
+        WHERE EXISTS(SELECT 1 FROM quick_state WHERE key='dense_base_revision');
+      UPDATE quick_state SET value=CAST(value AS INTEGER)+1 WHERE key='revision';
+    END;
+    CREATE TRIGGER IF NOT EXISTS quick_file_kind_delta AFTER UPDATE OF kind ON files
+      WHEN old.kind<>new.kind BEGIN
+      INSERT OR IGNORE INTO quick_dirty SELECT 'text',id FROM units WHERE file_id=new.id
+        AND EXISTS(SELECT 1 FROM quick_state WHERE key='dense_base_revision');
+    END;
+    CREATE TRIGGER IF NOT EXISTS quick_unit_owner_delta AFTER UPDATE OF file_id ON units
+      WHEN old.file_id<>new.file_id BEGIN
+      INSERT OR IGNORE INTO quick_dirty SELECT 'text',new.id
+        WHERE EXISTS(SELECT 1 FROM quick_state WHERE key='dense_base_revision');
+      UPDATE quick_state SET value=CAST(value AS INTEGER)+1 WHERE key='revision';
+    END;
+    INSERT OR REPLACE INTO quick_state VALUES('schema_version','3');
     COMMIT;
     ''')
 
@@ -304,7 +336,7 @@ class QuickSearch:
         q = q/max(float(np.linalg.norm(q)), 1e-12)
         from . import quick_cache
         whole_drive = scope[0] is None or all(str(Path(root)) == Path(root).anchor for root in scope[0])
-        packed = quick_cache.blocks(db, model, len(q), kind=kind) if whole_drive else None
+        packed = quick_cache.blocks(db, model, len(q), kind=kind, allow_delta=True) if whole_drive else None
         if packed is not None:
             resources.callback(packed.close)
             # The OS can page this representation; do not also pin a whole
@@ -321,6 +353,29 @@ class QuickSearch:
         def source():
             if packed is not None:
                 yield from packed
+                # The base has omitted changed IDs (including tombstones).
+                # Read their current values in the very same SQLite snapshot.
+                for basis, label in ((0, 'name'), (1, 'text')):
+                    changed = [sid for source_kind, sid in packed.dirty if source_kind == label]
+                    for offset in range(0, len(changed), 400):
+                        if cancelled():
+                            return
+                        selected = changed[offset:offset+400]
+                        marks = ','.join('?' for _ in selected)
+                        if basis:
+                            sql = '''SELECT f.id AS file_id,v.source_id,v.data FROM quick_vectors v
+                                JOIN units u ON u.id=v.source_id JOIN files f ON f.id=u.file_id
+                                WHERE v.kind='text' AND v.identity=u.digest AND f.status='ready' '''
+                        else:
+                            sql = '''SELECT f.id AS file_id,v.source_id,v.data FROM quick_vectors v
+                                JOIN files f ON f.id=v.source_id WHERE v.kind='name'
+                                AND v.identity=f.path AND f.status<>'metadata' '''
+                        rows = db.execute(sql+' AND v.model=? AND '+clause+kind_clause+
+                                          ' AND v.source_id IN ('+marks+')', (model, *args, *selected)).fetchall()
+                        if rows:
+                            ids = np.array([(r['file_id'], r['source_id']) for r in rows], dtype=np.int64)
+                            matrix = np.frombuffer(b''.join(r['data'] for r in rows), dtype='<f2').reshape(len(rows), len(q))
+                            yield basis, ids, matrix
                 return
             if blocks is not None:
                 yield from blocks
@@ -368,7 +423,10 @@ class QuickSearch:
         for basis, ids, matrix in source():
             if cancelled():
                 return []
-            scores = matrix.astype('<f4') @ q
+            # A fixed row reduction makes scores independent of block length
+            # and row position. BLAS GEMV can round identical vectors differently
+            # in its tail lanes, changing tie winners after base/delta splitting.
+            scores = np.einsum('ij,j->i', matrix.astype('<f4'), q, optimize=False)
             if not basis:
                 # Short path hints otherwise systematically outrank stronger
                 # evidence from the extracted body in this static model.
@@ -502,7 +560,8 @@ class QuickService:
                             try:
                                 from . import quick_cache
                                 dimensions = getattr(self.model, 'dimensions', 0)
-                                if dimensions and quick_cache.build(db_path, self.model.key, dimensions, self.stopping):
+                                if dimensions and quick_cache.build(db_path, self.model.key, dimensions, self.stopping,
+                                                                    min_compaction_age=30):
                                     cached_revision = revision
                             except Exception:
                                 # An optional acceleration failure must never

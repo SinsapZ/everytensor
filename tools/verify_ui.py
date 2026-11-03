@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import time
@@ -24,7 +25,7 @@ from PySide6.QtQml import QQmlEngine, QQmlExpression
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from everytensor.desktop import create_desktop
-from everytensor import locations
+from everytensor import locations, media
 
 CAPTURE_DIR = None
 
@@ -73,6 +74,9 @@ class DesktopInteractionTests(unittest.TestCase):
         self.client._manual_generation = -1
         self.client._pending.clear()
         self.client._inflight = False
+        self.client._refreshing = False
+        self.client._channel_errors.clear()
+        self.client._search_error = ''
         self.client._visible = 100
         self.window.setProperty('feedbackMessage', '')
         self.client._publish(self.rows)
@@ -112,6 +116,7 @@ class DesktopInteractionTests(unittest.TestCase):
 
     def capture(self, name):
         if CAPTURE_DIR:
+            QTest.mouseMove(self.window, QPointF(8, self.window.height() - 8).toPoint())
             QTest.qWait(150)
             target = CAPTURE_DIR / (name + '.png')
             self.assertTrue(self.window.grabWindow().save(str(target)), str(target))
@@ -120,7 +125,24 @@ class DesktopInteractionTests(unittest.TestCase):
         end = time.monotonic() + seconds
         while not predicate() and time.monotonic() < end:
             QTest.qWait(20)
+            # Qt's Windows test wait can retain the GIL; let Python preview
+            # workers run as they do in the application's normal event loop.
+            time.sleep(.005)
         self.assertTrue(predicate(), 'Timed out waiting for UI state')
+
+    def video_row(self, file_id=2000):
+        """A real, small video exercises FFmpeg and asynchronous Qt images."""
+        if not shutil.which(media.executable('ffmpeg')):
+            self.skipTest('FFmpeg is needed for the real video interaction check')
+        path = self.root / f'视频范围验证 {file_id}.mp4'
+        if not path.exists():
+            media.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
+                       'testsrc2=size=160x90:rate=2:duration=125',
+                       '-c:v', 'mpeg4', '-q:v', '8', '-threads', '1', str(path)])
+        return dict(file_id=file_id, path=str(path), name=path.name, kind='video',
+                    size=path.stat().st_size, mtime=path.stat().st_mtime_ns,
+                    location={'start': 62., 'end': 70., 'duration': 125.},
+                    hits=[{'start': 62., 'end': 70.}, {'start': 100., 'end': 108.}])
 
     def test_01_six_categories_cycle(self):
         self.click('tab_all')
@@ -389,6 +411,160 @@ class DesktopInteractionTests(unittest.TestCase):
                 self.assertEqual(store.setting(client.db, 'model'), str(self.root / 'installed-model'))
         finally:
             client.close()
+
+    def test_19_video_range_controls_and_real_frames(self):
+        preview = self.runtime.preview
+        self.client._kind = 'video'
+        self.client._publish([self.video_row()])
+        self.wait_until(lambda: not preview.loading and len(preview.frames) == 8, seconds=10)
+        self.wait_until(lambda: not preview.framesLoading, seconds=10)
+        self.assertTrue(all(frame['source'] for frame in preview.frames))
+        self.assertEqual(preview.frameSpan, 30)
+        self.assertEqual((preview.frameStart, preview.frameEnd), (47, 77))
+        self.assertFalse(self.item('videoRangeCurrent').property('visible'))
+        self.click('videoRangeNext')
+        self.assertEqual((preview.frameStart, preview.frameEnd), (77, 107))
+        self.assertTrue(self.item('videoRangeCurrent').property('visible'))
+        self.click('videoRangeCurrent')
+        self.assertEqual((preview.frameStart, preview.frameEnd), (47, 77))
+        self.assertFalse(self.item('videoRangeCurrent').property('visible'))
+        choice = self.item('videoFrameRange')
+        choice.forceActiveFocus()
+        self.key(Qt.Key.Key_End)
+        self.wait_until(lambda: preview.frameSpan == 0)
+        self.assertEqual((preview.frameStart, preview.frameEnd), (0, 125))
+        self.assertFalse(self.item('videoRangeNext').property('enabled'))
+        self.assertFalse(self.item('videoRangePrevious').property('enabled'))
+        self.wait_until(lambda: not preview.framesLoading, seconds=10)
+        self.assertTrue(all(frame['source'] for frame in preview.frames))
+        choice.forceActiveFocus()
+        self.key(Qt.Key.Key_Home)
+        self.assertEqual(preview.frameSpan, 10)
+        self.wait_until(lambda: not preview.framesLoading, seconds=10)
+        frame_list = self.item('videoFrames')
+        first = frame_list.property('contentItem').childItems()[0]
+        self.click_item(first)
+        self.wait_until(lambda: not preview.loading)
+        self.assertAlmostEqual(self.client.selectedRaw['location']['start'], preview.frames[0]['second'])
+        for width, height in ((920, 620), (1280, 820)):
+            self.window.setWidth(width)
+            self.window.setHeight(height)
+            QTest.qWait(250)
+            self.wait_until(lambda: not preview.loading, seconds=10)
+            pane = self.item('previewPane')
+            for name in ('videoFrameRange', 'videoRangeLabel', 'videoRangeCurrent', 'videoTimeline'):
+                item = self.item(name)
+                if not item.property('visible'):
+                    continue
+                point = item.mapToItem(pane, QPointF(0, 0))
+                self.assertGreaterEqual(point.x(), 0)
+                self.assertLessEqual(point.x() + item.width(), pane.width())
+                self.assertLessEqual(point.y() + item.height(), pane.height())
+            self.capture('video-range-' + str(width))
+
+    def test_20_video_pending_seek_does_not_cross_files(self):
+        preview = self.runtime.preview
+        rows = [self.video_row(), self.video_row(2001)]
+        self.client._publish(rows)
+        self.wait_until(lambda: not preview.loading and preview.duration > 0, seconds=10)
+        slider = self.item('videoTimeline')
+        slider.forceActiveFocus()
+        # Queue a debounced seek and change files before its 90 ms timer fires.
+        QTest.keyClick(self.window, Qt.Key.Key_Right)
+        self.client.selectFile(2001, True)
+        QTest.qWait(180)
+        self.wait_until(lambda: not preview.loading, seconds=10)
+        self.assertEqual(self.client.selectedId, 2001)
+        self.assertEqual(self.client.selectedRaw['location']['start'], 62.)
+        self.assertEqual(preview.position, 62.)
+
+    def test_21_download_feedback_and_background(self):
+        manager = self.runtime.model_setup
+        manager._timer.stop()
+        try:
+            manager._state.update(phase='downloading', detail='正在下载模型和运行组件',
+                                  error='', received=600000000, total=1800000000,
+                                  speed_bps=2500000, eta_seconds=480, stalled=False,
+                                  transfer_state='downloading', completed_files=3, file_count=40)
+            manager.changed.emit()
+            self.js('window.openModelSetup()')
+            QTest.qWait(150)
+            speed = self.item('modelInstallSpeed')
+            self.assertIn('/s', speed.property('text'))
+            self.assertIn('8', speed.property('text'))
+            self.assertFalse(self.item('modelInstallExamples').property('visible'))
+            self.capture('model-download-speed')
+            manager._state.update(stalled=True, speed_bps=0, eta_seconds=-1)
+            manager.changed.emit()
+            QTest.qWait(30)
+            self.assertNotIn('/s', speed.property('text'))
+            self.click('deferModelButton')
+            self.assertTrue(manager.active)
+            self.assertFalse(self.item('modelSetupDialog').property('visible'))
+        finally:
+            manager._state.update(phase='paused', speed_bps=0, eta_seconds=-1, stalled=False)
+            manager.changed.emit()
+            manager._timer.start()
+
+    def test_22_search_excerpt_partial_failure_and_retry(self):
+        row = dict(self.rows[0], text='<b>世界模型</b>：预测实验的误差记录。', sources=['内容'])
+        self.client._publish([row])
+        self.client._set_search_error('semantic', '语义查询暂时失败')
+        self.client.stateChanged.emit()
+        QTest.qWait(80)
+        self.assertTrue(self.item('searchErrorNotice').property('visible'))
+        excerpt = self.item('resultExcerpt_1')
+        self.assertIn('<b>世界模型</b>', excerpt.property('text'))
+        self.client.selectFile(1, True)
+        self.window.setWidth(920)
+        self.window.setHeight(620)
+        QTest.qWait(120)
+        self.capture('search-partial-error')
+        self.click('retrySearchButton')
+        self.assertEqual(self.client.searchError, '')
+        self.assertEqual(self.client.selectedId, 1)
+        self.assertEqual(self.client.results.count, 1)
+
+    def test_23_result_summary_fits_beside_categories(self):
+        self.window.setWidth(920)
+        self.window.setHeight(620)
+        self.client._pending.add('semantic')
+        self.client._more['semantic'] = True
+        self.client.stateChanged.emit()
+        QTest.qWait(80)
+        tab = self.item('tab_code')
+        summary = self.item('resultStatus')
+        tab_end = tab.mapToScene(QPointF(tab.width(), 0)).x()
+        summary_start = summary.mapToScene(QPointF(0, 0)).x()
+        self.assertGreater(summary_start, tab_end)
+        self.assertIn('100 / 130+', self.client.resultLabel)
+        self.assertIn('正在检索语义', self.client.resultLabel)
+        self.capture('search-progress-compact')
+        self.client._pending.clear()
+        self.client._more['semantic'] = False
+
+    def test_24_video_controls_fit_beside_results(self):
+        preview = self.runtime.preview
+        self.window.setWidth(920)
+        self.window.setHeight(620)
+        self.client._publish([self.video_row(), self.video_row(2001)])
+        self.wait_until(lambda: not preview.loading and len(preview.frames) == 8, seconds=10)
+        self.wait_until(lambda: not preview.framesLoading, seconds=10)
+        pane = self.item('previewPane')
+        self.assertTrue(self.item('resultsList').property('visible'))
+        # Keep a usable picture beside the results, not just controls and a sliver.
+        self.assertGreaterEqual(self.item('previewImageScroll').height(), 110)
+        for name in ('videoFrameRange', 'videoRangePrevious', 'videoRangeLabel', 'videoRangeNext',
+                     'videoRangeCurrent', 'videoFrames', 'videoTimeline'):
+            item = self.item(name)
+            if not item.property('visible'):
+                continue
+            point = item.mapToItem(pane, QPointF(0, 0))
+            self.assertGreaterEqual(point.x(), 0)
+            self.assertGreater(item.height(), 0)
+            self.assertLessEqual(point.x() + item.width(), pane.width())
+            self.assertLessEqual(point.y() + item.height(), pane.height())
+        self.capture('video-results-compact')
 
     def test_90_capture(self):
         self.capture('results-wide')

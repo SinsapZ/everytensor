@@ -79,6 +79,7 @@ class Controller(QObject):
         self._semantic_stage = ''
         self._semantic_coverage = {}
         self._search_error = self._warning = ''
+        self._channel_errors = {}
         self._scope_pending = True
         self._paused = False
         self._closing = False
@@ -132,7 +133,7 @@ class Controller(QObject):
         if not self._selected:
             return {}
         value = dict(self._selected)
-        value.update(ResultModel.presentation(self._selected))
+        value.update(ResultModel.presentation(self._selected, self._query))
         return value
 
     @property
@@ -155,16 +156,38 @@ class Controller(QObject):
 
     @Property(str, notify=stateChanged)
     def resultLabel(self):
+        if not self._rows and self.pending:
+            return '正在查找…'
+        total = f'{len(self._rows):,}' + ('+' if any(self._more.values()) else '')
+        count = (f'已显示 {self._model.count:,} / {total}'
+                 if self._model.count < len(self._rows) else total)
+        parts = [count + ' 个结果']
         if self._refreshing:
-            return f'{len(self._rows):,} 个结果 · 正在更新'
-        parts = [f'{len(self._rows):,}'+('+' if any(self._more.values()) else '')+' 个结果']
-        if self._semantic_stage == 'quick':
-            parts.append('快速语义（文字）')
-        elif 'semantic' in self._pending and self._rows:
+            parts.append('正在更新')
+        elif 'semantic' in self._pending:
             parts.append('正在检索语义')
+        elif self.pending:
+            parts.append('正在查找')
+        elif self._search_error:
+            parts.append('部分搜索未完成')
+        elif self._semantic_stage == 'quick':
+            parts.append('快速语义（文字）')
         elif self._content_incomplete() and self._rows:
             parts.append('内容索引中')
         return ' · '.join(parts)
+
+    @Property(str, notify=stateChanged)
+    def searchError(self): return self._search_error
+
+    @Property(bool, notify=stateChanged)
+    def refreshing(self): return self._refreshing
+
+    def _set_search_error(self, channel, error=''):
+        if error:
+            self._channel_errors[channel] = error
+        else:
+            self._channel_errors.pop(channel, None)
+        self._search_error = ' · '.join(self._channel_errors.values())
 
     @Property(str, notify=stateChanged)
     def emptyMessage(self):
@@ -252,6 +275,7 @@ class Controller(QObject):
         self._inflight = self._refreshing = self._dirty = False
         self._semantic_stage, self._semantic_coverage = '', {}
         self._search_error = ''
+        self._channel_errors.clear()
         self._publish([])
         if self._query.strip() or self._kind:
             self._issue_lexical()
@@ -342,7 +366,7 @@ class Controller(QObject):
             if index >= self._visible:
                 self._visible = (index//100+1)*100
         self.rowsAboutToChange.emit()
-        self._model.replace(rows[:self._visible])
+        self._model.replace(rows[:self._visible], self._query)
         self.rowsChanged.emit()
         self._select(selected or (rows[0] if rows else {}))
         self.stateChanged.emit()
@@ -410,6 +434,10 @@ class Controller(QObject):
         if not self._selected:
             return
         resolved = dict(location, **self._selected.get('location', {}))
+        if self._selected.get('kind') in ('video', 'audio'):
+            # The preview validates media bounds and may seek back from an
+            # undecodable EOF. Open/copy must use the frame actually displayed.
+            resolved.update({key: location[key] for key in ('start', 'end', 'duration') if key in location})
         if resolved != self._selected.get('location', {}):
             self._selected['location'] = resolved
             self.selectedChanged.emit()
@@ -430,6 +458,11 @@ class Controller(QObject):
             self._refresh()
         self._publish(self._rows)
 
+    @Slot()
+    def retrySearch(self):
+        if not self._closing and not self.pending and (self._query.strip() or self._kind):
+            self._refresh()
+
     def _refresh(self):
         manual = self._manual_generation == self._generation
         self._generation += 1
@@ -444,8 +477,10 @@ class Controller(QObject):
         self._refreshing, self._dirty = True, False
         self._last_refresh = time.monotonic()
         self._search_error = ''
+        self._channel_errors.clear()
         self._issue_lexical()
         self._issue_semantic()
+        self.stateChanged.emit()
 
     @Slot('QVariantMap')
     def applySettings(self, values):
@@ -572,7 +607,7 @@ class Controller(QObject):
                 self._inflight = False
                 if not pending:
                     self._pending.discard('semantic')
-            self._search_error = ('语义查询失败：'+event['error'][:120]) if event.get('error') else ''
+            self._set_search_error('semantic', ('语义查询失败：'+event['error'][:120]) if event.get('error') else '')
             if self._search_error:
                 self.log.error(self._search_error)
             if event.get('channels'):
@@ -626,7 +661,7 @@ class Controller(QObject):
                 self._model_state, self._model_status = 'error', self._warning
                 self._inflight = False
                 self._pending.discard('semantic')
-                self._search_error = self._warning
+                self._set_search_error('semantic', self._warning)
                 self._merge()
             self.errorOccurred.emit(self._warning)
         self.stateChanged.emit()
@@ -648,6 +683,7 @@ class Controller(QObject):
                 channel = 'names' if typ == 'names_partial' else typ
                 if typ != 'names_partial':
                     self._pending.discard(channel)
+                    self._set_search_error(channel)
                 self._set_channel(channel, rows, complete=typ != 'names_partial')
                 if channel in ('names', 'keywords'):
                     candidates = [row for row in self._channels['keywords'] if row.get('content_source') == 'live']
@@ -660,7 +696,8 @@ class Controller(QObject):
             except Exception:
                 self.log.exception('%s query failed', typ)
                 self._pending.discard('names' if typ == 'names_partial' else typ)
-                self._search_error = '文件搜索遇到问题，请重试'
+                self._set_search_error('names' if typ == 'names_partial' else typ,
+                                       '文件名搜索遇到问题，请重试' if typ.startswith('names') else '正文搜索遇到问题，请重试')
                 self._merge()
         deadline = time.monotonic()+.006
         while time.monotonic() < deadline:

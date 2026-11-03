@@ -4,7 +4,7 @@ By **[sinsap](https://github.com/SinsapZ)**
 
 [简体中文](README.md) | **English** | [日本語](README.ja.md) | [Español](README.es.md)
 
-Windows preview · main development version
+Windows source development version · v0.1.0-alpha.4
 
 Every file is a vector.
 
@@ -23,6 +23,8 @@ File types include TXT, Markdown, source code, PDF, DOCX, PPTX, XLSX, EPUB, imag
 The index stores file information for search. Files become searchable by name as the app finds them. To search content, the app must first read that content.
 
 ## Windows installer
+
+The download below is the published v0.1.0-alpha.3 release. Building the current source produces `release/windows/EveryTensor-0.1.0-alpha.4-windows-x64-setup.exe`.
 
 Run [EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.3/EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe) on Windows 10 1809 or later (64-bit), then open EveryTensor from Start. This per-user installer includes Python, desktop dependencies and the lightweight text model; installation and text search work offline. At first launch, or later in Settings > Multimodal search, install the optional model and CPU runtime (about 1.88 GB, including FFmpeg). Downloads run in the background, support pause/resume and retry, and are checked against pinned SHA-256 hashes. You can also import an existing compatible model. All four modalities are validated before activation; no separate Python installation is needed. Allow at least 5 GiB of free space. Components are kept under the user data directory in `multimodal/`, outside the index budget; subsequent search stays offline.
 

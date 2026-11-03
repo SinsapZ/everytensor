@@ -6,6 +6,7 @@ shipped manifest. Only a successfully validated runtime receives a ready marker.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
@@ -99,12 +100,15 @@ def installation_lock(root):
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
-def download(item, destination, cancel, progress, *, opener=None):
+def download(item, destination, cancel, progress, *, opener=None, status=None, transferred=None):
     """Resume only the pinned bytes; publish a final file after a full hash check."""
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     expected = int(item['bytes'])
+    status = status or (lambda stage: None)
+    transferred = transferred or (lambda count: None)
     if destination.is_file() and destination.stat().st_size == expected:
+        status('checking')
         if checksum(destination, cancel) == item['sha256']:
             progress(expected)
             return destination
@@ -117,6 +121,7 @@ def download(item, destination, cancel, progress, *, opener=None):
             partial.unlink()
             start = 0
         if start == expected:
+            status('checking')
             if checksum(partial, cancel) == item['sha256']:
                 partial.replace(destination)
                 progress(expected)
@@ -127,6 +132,7 @@ def download(item, destination, cancel, progress, *, opener=None):
         if start:
             headers['Range'] = f'bytes={start}-'
         try:
+            status('connecting')
             with opener.open(urllib.request.Request(item['url'], headers=headers), timeout=12) as response:
                 append = response.status == 206 and start > 0
                 if response.status == 206:
@@ -141,6 +147,7 @@ def download(item, destination, cancel, progress, *, opener=None):
                     raise ValueError('下载文件大小与固定版本不一致。')
                 with partial.open('ab' if append else 'wb') as output:
                     progress(written)
+                    status('downloading')
                     # Read available bytes instead of waiting to fill a large
                     # buffer, so pause/close stays responsive on slow links.
                     while block := response.read1(256 * 1024):
@@ -149,18 +156,22 @@ def download(item, destination, cancel, progress, *, opener=None):
                             raise ValueError('下载内容超过了预期大小。')
                         output.write(block)
                         written += len(block)
+                        transferred(len(block))
                         progress(written)
                 if written != expected:
                     raise OSError('网络连接中断，已保存下载进度。')
             checkpoint(cancel)
+            status('checking')
             if checksum(partial, cancel) != item['sha256']:
                 partial.unlink()
                 raise ValueError('文件校验失败，未启用模型；请重试下载。')
             partial.replace(destination)
             return destination
         except (OSError, urllib.error.URLError):
+            checkpoint(cancel)
             if attempt == 2:
                 raise
+            status('retrying')
             if cancel.wait(1 + attempt * 2):
                 raise Cancelled()
     raise RuntimeError('下载未完成')
@@ -223,6 +234,64 @@ class Installer:
         self.cancel = cancel or threading.Event()
         self.opener = opener
 
+    def fetch(self, jobs, total):
+        """Overlap independent files, keeping extraction and publication serialized."""
+        received = [0] * len(jobs)
+        stages = {}
+        finished = set()
+        network = 0
+        lock = threading.Lock()
+        for index, (item, target) in enumerate(jobs):
+            partial = target.with_name(target.name + '.part')
+            candidate = target if target.is_file() else partial
+            if candidate.is_file():
+                received[index] = min(item['bytes'], candidate.stat().st_size)
+
+        def emit():
+            active = set(stages.values())
+            stage = next((s for s in ('downloading', 'retrying', 'connecting', 'checking') if s in active), 'connecting')
+            detail = {'downloading': '正在下载模型和运行组件', 'retrying': '网络连接中断，正在自动重试（保留已下载部分）',
+                      'connecting': '正在连接下载服务器', 'checking': '正在校验已下载的文件'}[stage]
+            self.progress(dict(phase='downloading', detail=detail, received=sum(received), total=total,
+                               network_received=network, transfer_state=stage,
+                               completed_files=len(finished), file_count=len(jobs), active_files=len(stages)))
+
+        def work(index):
+            item, target = jobs[index]
+            def report(value):
+                with lock:
+                    received[index] = value
+                    emit()
+            def status(stage):
+                with lock:
+                    stages[index] = stage
+                    emit()
+            def transferred(count):
+                nonlocal network
+                with lock:
+                    network += count
+            download(item, target, self.cancel, report, opener=self.opener,
+                     status=status, transferred=transferred)
+            with lock:
+                received[index] = item['bytes']
+                finished.add(index)
+                stages.pop(index, None)
+                emit()
+
+        emit()
+        # Start long transfers early so small dependencies can finish alongside.
+        order = sorted(range(len(jobs)), key=lambda i: jobs[i][0]['bytes'], reverse=True)
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix='model-download') as pool:
+            futures = [pool.submit(work, index) for index in order]
+            try:
+                for future in as_completed(futures):
+                    future.result()
+            except BaseException:
+                self.cancel.set()
+                for future in futures:
+                    future.cancel()
+                raise
+
     def validate(self, python, model):
         from .paths import resource_root
         log = self.root / 'validation.log'
@@ -260,27 +329,24 @@ class Installer:
             if shutil.disk_usage(self.root).free < max(0, required - present):
                 raise RuntimeError(f'模型安装需要约 {required / 1024**3:.1f} GiB 可用空间，请先释放空间。')
             model = Path(local_model).resolve() if local_model else self.root / 'model'
-            completed = 0
             archives = []
+            jobs = []
             # Reject an incompatible local folder before downloading components.
             ordered = sorted(artifacts, key=lambda a: a['kind'] != 'model') if local_model else artifacts
             for item in ordered:
                 checkpoint(self.cancel)
                 if item['kind'] == 'model' and local_model:
                     target = model / item['path']
-                    self.progress(dict(phase='verifying', detail='正在校验已有模型：' + item['path'], received=completed, total=total))
+                    self.progress(dict(phase='verifying', detail='正在校验已有模型：' + item['path'], received=0, total=total))
                     if (not target.is_file() or target.stat().st_size != item['bytes']
                             or checksum(target, self.cancel) != item['sha256']):
                         raise ValueError('已有模型文件缺失或版本不匹配：' + item['path'])
                     continue
                 target = model / item['path'] if item['kind'] == 'model' else self.root / 'downloads' / item['name']
-                labels = dict(python='运行环境', wheel='推理组件', ffmpeg='音视频组件', model='多模态模型')
-                def report(received, base=completed, label=labels[item['kind']]):
-                    self.progress(dict(phase='downloading', detail='正在下载' + label, received=base + received, total=total))
-                download(item, target, self.cancel, report, opener=self.opener)
-                completed += item['bytes']
+                jobs.append((item, target))
                 if item['kind'] != 'model':
                     archives.append((item, target))
+            self.fetch(jobs, total)
             self.progress(dict(phase='installing', detail='正在准备本地运行组件', received=total, total=total))
             runtime = self.root / 'runtime'
             # No ready marker exists, so no app process may use these files yet.

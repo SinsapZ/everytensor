@@ -223,6 +223,19 @@ def scan(db, root, checkpoint=lambda: None, *, subtree=None, progress=lambda _: 
 
 
 def index_pending(db, checkpoint=lambda: None, progress=lambda _: None, limit=None, *, file_id=None, max_units=None):
+    checkpoint_error = None
+
+    def checked_checkpoint():
+        nonlocal checkpoint_error
+        try:
+            checkpoint()
+        except Exception as exc:
+            # Callers use exceptions to stop/reconfigure indexing. Preserve
+            # that control flow without coupling extraction to the scheduler's
+            # exception type or treating an interruption as a damaged file.
+            checkpoint_error = exc
+            raise
+
     def pending():
         # Do not hold a live read cursor across extraction and concurrent writes:
         # that old WAL snapshot cannot subsequently be upgraded to a writer.
@@ -247,9 +260,9 @@ def index_pending(db, checkpoint=lambda: None, progress=lambda _: None, limit=No
         try:
             if max_units is not None:
                 from .progressive_index import advance
-                count += advance(db, row, max(1, int(max_units)), checkpoint)
+                count += advance(db, row, max(1, int(max_units)), checked_checkpoint)
                 continue
-            fingerprint = media.digest_file(path, checkpoint)
+            fingerprint = media.digest_file(path, checked_checkpoint)
             if row['fingerprint'] == SCHEMA+fingerprint:
                 with storage.write(db, 16384):
                     db.execute("UPDATE files SET status='ready',error='' WHERE id=?", (row['id'],))
@@ -268,7 +281,7 @@ def index_pending(db, checkpoint=lambda: None, progress=lambda _: None, limit=No
                         db.executemany('INSERT INTO staged(ordinal,text,location,digest,tokens) VALUES(?,?,?,?,?)', staged)
                     staged.clear()
             for ordinal, (text, loc) in enumerate(media.extract(path)):
-                checkpoint()
+                checked_checkpoint()
                 if text and loc.get('semantic') is not False:
                     from .content_quality import annotate
                     loc = annotate(text, loc, kind=row['kind'])
@@ -308,6 +321,8 @@ def index_pending(db, checkpoint=lambda: None, progress=lambda _: None, limit=No
             raise
         except Exception as exc:
             db.rollback()
+            if exc is checkpoint_error:
+                raise
             with storage.transaction(db):
                 db.execute("UPDATE files SET status='error',error=? WHERE id=?", (str(exc)[:600], row['id']))
                 db.execute('DELETE FROM extraction_jobs WHERE file_id=?', (row['id'],))

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from pathlib import Path
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Property, Qt, Signal, Slot
 
@@ -16,10 +17,25 @@ def location_label(row):
     return label(row.get('location') or {})
 
 
+def match_excerpt(row, query='', limit=120):
+    """A plain-text window around the literal clue, or the returned content unit."""
+    text = ' '.join(str(row.get('text') or '').split())
+    if not text or row.get('quick_basis') == 'name':
+        return ''
+    from .query_evidence import clean
+    phrase = clean(query)
+    clues = [phrase] + re.findall(r'[\w]{2,}', phrase)
+    match = next((found for clue in clues if clue
+                  if (found := re.search(re.escape(clue), text, re.IGNORECASE))), None)
+    start = max(0, match.start() - 24) if match else 0
+    end = min(len(text), start + limit)
+    return ('…' if start else '') + text[start:end] + ('…' if end < len(text) else '')
+
+
 class ResultModel(QAbstractListModel):
     countChanged = Signal()
     _names = ('fileId', 'name', 'parentPath', 'fullPath', 'kind', 'suffix',
-              'locationLabel', 'thumbnailSource')
+              'locationLabel', 'thumbnailSource', 'matchLabel', 'excerpt')
     _roles = {int(Qt.ItemDataRole.UserRole)+i+1: name.encode() for i, name in enumerate(_names)}
 
     def __init__(self, parent=None):
@@ -27,6 +43,7 @@ class ResultModel(QAbstractListModel):
         self.rows = []
         self._thumbnails = {}
         self._views = {}
+        self._query = ''
 
     def roleNames(self):
         return self._roles
@@ -39,7 +56,7 @@ class ResultModel(QAbstractListModel):
         return len(self.rows)
 
     @staticmethod
-    def presentation(row):
+    def presentation(row, query=''):
         path = Path(row.get('path', ''))
         parent_path = path.parent
         parent = str(parent_path)
@@ -52,9 +69,15 @@ class ResultModel(QAbstractListModel):
         if row.get('kind') in ('image', 'video') or path.suffix.lower() == '.pdf':
             identity = json.dumps([str(path), row.get('size'), row.get('mtime')], ensure_ascii=False).encode('utf-8')
             thumbnail = 'image://thumb/'+base64.urlsafe_b64encode(identity).decode('ascii').rstrip('=')
+        sources = list(dict.fromkeys(row.get('sources') or []))
+        labels = {'名称': '名称匹配', '内容': '内容匹配', '语义': '语义相关'}
+        if row.get('quick_basis') == 'name':
+            labels['语义'] = '名称语义'
+        match_label = ' · '.join(labels[source] for source in sources if source in labels)
         return dict(fileId=row['file_id'], name=row.get('name', path.name), parentPath=parent,
                     fullPath=str(path), kind=row.get('kind', 'other'), suffix=path.suffix.lstrip('.').upper(),
-                    locationLabel=location_label(row), thumbnailSource=thumbnail)
+                    locationLabel=location_label(row), thumbnailSource=thumbnail,
+                    matchLabel=match_label, excerpt=match_excerpt(row, query))
 
     def data(self, index, role=int(Qt.ItemDataRole.DisplayRole)):
         if not index.isValid() or not 0 <= index.row() < len(self.rows):
@@ -85,7 +108,7 @@ class ResultModel(QAbstractListModel):
             role = next(key for key, value in self._roles.items() if value == b'thumbnailSource')
             self.dataChanged.emit(self.index(index), self.index(index), [role])
 
-    def replace(self, rows):
+    def replace(self, rows, query=''):
         """Batch adjacent edits while preserving Qt's persistent file indexes.
 
         Emitting one insertion per file makes QML relayout a view hundreds of
@@ -93,6 +116,8 @@ class ResultModel(QAbstractListModel):
         change; identities already present still move without a model reset.
         """
         previous_count = len(self.rows)
+        query_changed = query != self._query
+        self._query = query
         wanted = {row['file_id'] for row in rows}
         runs, start = [], None
         for index, row in enumerate(self.rows):
@@ -122,7 +147,7 @@ class ResultModel(QAbstractListModel):
                     end += 1
                 added = [dict(item) for item in rows[target:end]]
                 for item in added:
-                    self._views[item['file_id']] = self.presentation(item)
+                    self._views[item['file_id']] = self.presentation(item, query)
                 self.beginInsertRows(QModelIndex(), target, end-1)
                 self.rows[target:target] = added
                 present.update(item['file_id'] for item in added)
@@ -135,12 +160,12 @@ class ResultModel(QAbstractListModel):
                 self.beginMoveRows(QModelIndex(), current, current, QModelIndex(), target)
                 self.rows.insert(target, self.rows.pop(current))
                 self.endMoveRows()
-            if self.rows[target] != row:
+            if self.rows[target] != row or query_changed:
                 old = self.rows[target]
                 if (old.get('path'), old.get('size'), old.get('mtime')) != (row.get('path'), row.get('size'), row.get('mtime')):
                     self._thumbnails.pop(row['file_id'], None)
                 self.rows[target] = dict(row)
-                self._views[row['file_id']] = self.presentation(row)
+                self._views[row['file_id']] = self.presentation(row, query)
                 changed.append(target)
             target += 1
         if changed:

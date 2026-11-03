@@ -1,4 +1,4 @@
-"""Disposable dense quick vectors, keyed to one committed SQLite generation.
+"""Disposable dense quick vectors plus a bounded, exact SQLite delta.
 
 SQLite remains authoritative. This file only avoids repeatedly decoding its
 vector BLOBs; scope, live files, and source identities are checked by the search.
@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import struct
+import time
 import uuid
 
 from . import storage, store
@@ -28,6 +29,8 @@ FILENAME = 'quick-search.bin'
 BUILDING = 'quick-search.building'
 LOCKFILE = 'quick-search.lock'
 IDENTITY_KEY = 'cache_identity'
+BASE_REVISION_KEY = 'dense_base_revision'
+MAX_DIRTY = 8192
 KIND_CODES = {'document': 1, 'image': 2, 'video': 3, 'code': 4, 'other': 5, 'audio': 6}
 
 
@@ -82,12 +85,19 @@ def _header(source, expected, dimensions):
 
 class _Blocks:
     """A closeable iterator; yielded arrays own their storage, never the mmap."""
-    def __init__(self, source, header, kind=''):
+    def __init__(self, source, header, kind='', dirty=()):
+        import numpy as np
         self._source = source
         self._map = mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ)
         self._header = header
         self._position = 0
         self._kind = KIND_CODES[kind] if kind else None
+        # This snapshot is also consumed by the caller to fetch replacements
+        # and additions from authoritative SQLite rows. Deleted ids contribute
+        # no replacement, but must still be suppressed in the mapped base.
+        self.dirty = tuple(dirty)
+        self._dirty_ids = tuple(np.array(sorted(sid for k, sid in self.dirty if k == name),
+                                        dtype=np.int64) for name in ('name', 'text'))
 
     def __iter__(self):
         return self
@@ -110,6 +120,15 @@ class _Blocks:
                         continue
                 ids = np.ndarray((count, 2), dtype='<i8', buffer=self._map,
                                  offset=header['ids_offset']+start*16)
+                dirty_ids = self._dirty_ids[basis]
+                if dirty_ids.size:
+                    positions = np.searchsorted(dirty_ids, ids[:, 1])
+                    clean = (positions == dirty_ids.size) | (
+                        dirty_ids[np.minimum(positions, dirty_ids.size-1)] != ids[:, 1])
+                    take = clean if take is None else take & clean
+                    if not take.any():
+                        del ids
+                        continue
                 ids = ids.copy() if take is None else ids[take]
                 matrix = np.ndarray((count, dim), dtype='<f2', buffer=self._map,
                                     offset=header['vectors_offset']+start*dim*2)
@@ -141,10 +160,13 @@ class _Blocks:
         self.close()
 
 
-def blocks(db, model, dimensions, kind=''):
+def blocks(db, model, dimensions, kind='', *, allow_delta=False):
     """Return None on a cache miss, else a closeable/context-managed iterator.
 
-    Validation uses the caller's current SQLite snapshot and reads only 4 KiB.
+    Validation uses the caller's current SQLite snapshot. With allow_delta,
+    the file must match the committed base marker and at most MAX_DIRTY source
+    ids may have changed. The caller MUST append their current SQLite vectors
+    using this same snapshot; the returned iterator exposes them as .dirty.
     Close the iterator in a finally block if a query abandons it before exhaustion.
     """
     source = None
@@ -155,11 +177,22 @@ def blocks(db, model, dimensions, kind=''):
             expected = _stamp(db)
             if expected is None or expected[0] != model:
                 return None
+            dirty = ()
+            if allow_delta:
+                base = db.execute('SELECT value FROM quick_state WHERE key=?',
+                                  (BASE_REVISION_KEY,)).fetchone()
+                if base is None or not 0 <= int(base[0]) <= expected[1]:
+                    return None
+                dirty = tuple((row[0], row[1]) for row in db.execute(
+                    'SELECT kind,source_id FROM quick_dirty LIMIT ?', (MAX_DIRTY+1,)))
+                if len(dirty) > MAX_DIRTY:
+                    return None
+                expected = expected[0], int(base[0]), expected[2]
             source = _path(db).open('rb')
             header = _header(source, expected, dimensions)
             if header is None:
                 return None
-            result = _Blocks(source, header, kind)
+            result = _Blocks(source, header, kind, dirty)
             source = None  # The returned iterator now owns the open descriptor.
             return result
     except (OSError, ValueError, TypeError, sqlite3.Error, struct.error):
@@ -259,12 +292,14 @@ def _write_snapshot(db, target, expected, dimensions, stopping):
     return True
 
 
-def build(db_path, model, dimensions, stopping=None):
+def build(db_path, model, dimensions, stopping=None, *, min_compaction_age=0):
     """Return True when a matching dense cache is ready, else False.
 
     The optional cache never holds a SQLite writer while copying BLOBs. Failures,
     cancellation, and concurrent source changes leave the previous cache intact.
     An OS lock protects the build file, including recovery after a crashed writer.
+    A recent searchable base with a small delta may defer compaction and return
+    False, allowing the caller to retry later without rewriting after every edit.
     """
     db = None
     path = Path(db_path).resolve()
@@ -283,8 +318,23 @@ def build(db_path, model, dimensions, stopping=None):
                 db = store.connect(path, initialize=False)
                 cached = blocks(db, model, dimensions)
                 if cached is not None:
+                    revision = cached._header['revision']
                     cached.close()
-                    return True
+                    base = db.execute('SELECT value FROM quick_state WHERE key=?',
+                                      (BASE_REVISION_KEY,)).fetchone()
+                    if base is not None and int(base[0]) == revision:
+                        return True
+                if min_compaction_age > 0:
+                    searchable = blocks(db, model, dimensions, allow_delta=True)
+                    if searchable is not None:
+                        try:
+                            age = time.time()-destination.stat().st_mtime
+                            # A backwards clock jump must not defer forever.
+                            if (len(searchable.dirty) < MAX_DIRTY//2
+                                    and 0 <= age < min_compaction_age):
+                                return False
+                        finally:
+                            searchable.close()
                 # A replacement/reset quick_state gets a new identity, even if
                 # the model and numerical revision happen to match an old file.
                 if not db.execute('SELECT 1 FROM quick_state WHERE key=?', (IDENTITY_KEY,)).fetchone():
@@ -304,6 +354,13 @@ def build(db_path, model, dimensions, stopping=None):
                         return False
                     os.replace(temporary, destination)
                     owned = False
+                    # The marker and dirty reset commit together. Readers with
+                    # an older SQLite snapshot reject the new file's revision;
+                    # a crash between rename and commit likewise causes a miss.
+                    db.execute('DELETE FROM quick_dirty')
+                    db.execute('INSERT INTO quick_state VALUES(?,?) ON CONFLICT(key) '
+                               'DO UPDATE SET value=excluded.value',
+                               (BASE_REVISION_KEY, str(expected[1])))
                 return True
             finally:
                 # Cleanup remains inside the lock, so it can never unlink a

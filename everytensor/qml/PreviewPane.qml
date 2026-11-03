@@ -10,6 +10,8 @@ Rectangle {
     radius: 12
     border.color: Theme.line
     property var row: client.selected
+    readonly property int selectedFileId: client.selectedId
+    onSelectedFileIdChanged: seekTimer.stop()
     readonly property bool hasRow: row && !!row.name
     readonly property bool isVideo: hasRow && row.kind === "video"
     readonly property bool isMedia: hasRow && (row.kind === "video" || row.kind === "audio")
@@ -18,6 +20,7 @@ Rectangle {
     readonly property string path: hasRow ? String(row.path || row.fullPath || "") : ""
     readonly property bool compactHeader: width < 700
     onPathChanged: {
+        seekTimer.stop();
         imageScroll.contentY = 0;
         if(textScroll.contentItem) textScroll.contentItem.contentY = 0;
     }
@@ -30,9 +33,14 @@ Rectangle {
     Timer { id: loadingDelay; interval: 150; onTriggered: panel.showLoading = panel.requestLoading }
     function timeLabel(seconds) {
         var t = Math.max(0, Math.floor(seconds || 0));
-        return Math.floor(t / 60) + ":" + (t % 60 < 10 ? "0" : "") + t % 60;
+        var minutes = Math.floor(t / 60) % 60;
+        var suffix = (minutes < 10 ? "0" : "") + minutes + ":" + (t % 60 < 10 ? "0" : "") + t % 60;
+        return t >= 3600 ? Math.floor(t / 3600) + ":" + suffix : suffix;
     }
-    function resizePreview() { preview.setBounds(Math.max(100, Math.floor(viewport.width - 40)), Math.max(100, Math.floor(viewport.height - 40))); }
+    function resizePreview() {
+        var inset = panel.isVideo ? 16 : 40;
+        preview.setBounds(Math.max(100, Math.floor(viewport.width - inset)), Math.max(100, Math.floor(viewport.height - inset)));
+    }
     onWidthChanged: boundsTimer.restart()
     onHeightChanged: boundsTimer.restart()
     Timer { id: boundsTimer; interval: 100; onTriggered: panel.resizePreview() }
@@ -72,6 +80,7 @@ Rectangle {
         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line; visible: panel.hasRow }
         Rectangle {
             id: viewport
+            objectName: "previewViewport"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.margins: 1
@@ -83,7 +92,7 @@ Rectangle {
             Flickable {
                 id: imageScroll
                 objectName: "previewImageScroll"
-                anchors.fill: parent; anchors.margins: 20
+                anchors.fill: parent; anchors.margins: panel.isVideo ? 8 : 20
                 visible: panel.hasRow && preview.source.length > 0
                 contentWidth: width
                 contentHeight: imageItem.height
@@ -143,23 +152,40 @@ Rectangle {
                 visible: panel.hasRow && panel.showLoading
                 Text { id: loadingText; anchors.centerIn: parent; text: "正在准备预览…"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12 }
             }
-            DeskButton {
-                anchors.centerIn: parent
-                visible: panel.isMedia && (preview.source.length > 0 || row.kind === "audio") && !preview.loading
-                iconName: "play"
-                primary: true
-                width: 56; height: 56
-                tooltip: "从这里开始播放"
-                onClicked: preview.open()
-            }
         }
         Item {
             visible: panel.isMedia && preview.duration > 0
             Layout.fillWidth: true
-            Layout.preferredHeight: panel.height < 480 ? 118 : 130
+            Layout.preferredHeight: panel.isVideo ? (panel.height < 600 ? 170 : 190) : 90
             ColumnLayout {
-                anchors.fill: parent; anchors.margins: 16
-                spacing: 8
+                anchors.fill: parent; anchors.margins: 10
+                spacing: 6
+                RowLayout {
+                    visible: panel.isVideo
+                    Layout.fillWidth: true; Layout.preferredHeight: 28
+                    spacing: 4
+                    ComboBox {
+                        id: frameRangeChoice
+                        objectName: "videoFrameRange"
+                        Layout.preferredWidth: 96; implicitHeight: 28
+                        model: ["10 秒", "30 秒", "2 分钟", "全片"]
+                        currentIndex: preview.frameSpan === 10 ? 0 : preview.frameSpan === 30 ? 1 : preview.frameSpan === 120 ? 2 : 3
+                        Accessible.name: "视频帧预览范围"
+                        font.family: Theme.family; font.pixelSize: 12
+                        onActivated: { client.markInteraction(); preview.setFrameSpan([10, 30, 120, 0][index]); }
+                    }
+                    DeskButton { objectName: "videoRangePrevious"; text: "‹"; compact: true; width: 28; height: 28; tooltip: "前一段"; enabled: preview.frameStart > 0; onClicked: { client.markInteraction(); preview.moveFrameRange(-1); } }
+                    Text {
+                        objectName: "videoRangeLabel"
+                        Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
+                        text: panel.timeLabel(preview.frameStart) + "–" + panel.timeLabel(preview.frameEnd)
+                        color: Theme.secondary; font.family: Theme.family; font.pixelSize: 11; elide: Text.ElideRight
+                        HoverHandler { id: rangeHover }
+                        Hint { visible: rangeHover.hovered && !panel.Window.window.tooltipsBlocked; text: parent.text + (preview.framesLoading ? " · 正在加载预览帧" : " · 点击画面跳转") }
+                    }
+                    DeskButton { objectName: "videoRangeNext"; text: "›"; compact: true; width: 28; height: 28; tooltip: "后一段"; enabled: preview.frameEnd < preview.duration; onClicked: { client.markInteraction(); preview.moveFrameRange(1); } }
+                    DeskButton { objectName: "videoRangeCurrent"; visible: preview.position < preview.frameStart || preview.position > preview.frameEnd; text: "定位"; compact: true; height: 28; tooltip: "回到当前预览位置附近"; onClicked: preview.focusFrameRange() }
+                }
                 ListView {
                     id: frameList
                     objectName: "videoFrames"
@@ -172,15 +198,25 @@ Rectangle {
                         policy: frameList.contentWidth > frameList.width + 1 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
                         height: 5
                     }
-                    delegate: Rectangle {
+                    delegate: AbstractButton {
+                        id: frameButton
                         required property var modelData
                         width: Math.max(78, (frameList.width - 35) / 8)
                         height: frameList.height - (frameList.contentWidth > frameList.width + 1 ? 8 : 0)
-                        radius: 5
-                        color: Math.abs(modelData.second - preview.position) < Math.max(1, preview.duration / 16) ? Theme.accent : Theme.line
-                        Image { anchors.fill: parent; anchors.margins: 2; source: modelData.source; fillMode: Image.PreserveAspectCrop; asynchronous: true; smooth: true; clip: true }
-                        Rectangle { anchors.bottom: parent.bottom; anchors.right: parent.right; anchors.margins: 4; width: frameStamp.implicitWidth + 8; height: 18; radius: 3; color: "#b0252722"; Text { id: frameStamp; anchors.centerIn: parent; text: modelData.label || panel.timeLabel(modelData.second); color: "white"; font.pixelSize: 10; font.family: Theme.family } }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { client.markInteraction(); preview.seek(modelData.second); } }
+                        focusPolicy: Qt.StrongFocus
+                        hoverEnabled: true
+                        Accessible.name: "跳转到 " + panel.timeLabel(modelData.second)
+                        onActiveFocusChanged: if (activeFocus) frameList.positionViewAtIndex(modelData.index, ListView.Contain)
+                        onClicked: { client.markInteraction(); preview.seek(modelData.second); }
+                        background: Rectangle {
+                            radius: 5
+                            color: frameButton.visualFocus || Math.abs(frameButton.modelData.second - preview.position) <= Math.max(.01, (preview.frameEnd - preview.frameStart) / 14) ? Theme.accent : frameButton.hovered ? Theme.selectionLine : Theme.line
+                        }
+                        contentItem: Item {
+                            Image { anchors.fill: parent; anchors.margins: 2; source: frameButton.modelData.source; fillMode: Image.PreserveAspectFit; asynchronous: true; smooth: true; clip: true }
+                            Text { anchors.centerIn: parent; visible: !frameButton.modelData.source; text: frameButton.modelData.failed ? "无法取帧" : "…"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 11 }
+                        }
+                        Rectangle { z: 2; anchors.bottom: parent.bottom; anchors.right: parent.right; anchors.margins: 4; width: frameStamp.implicitWidth + 8; height: 18; radius: 3; color: "#b0252722"; Text { id: frameStamp; anchors.centerIn: parent; text: modelData.label || panel.timeLabel(modelData.second); color: "white"; font.pixelSize: 10; font.family: Theme.family } }
                     }
                 }
                 ListView {
@@ -199,12 +235,12 @@ Rectangle {
                 }
                 RowLayout {
                     Layout.fillWidth: true; spacing: 12
-                    Text { text: panel.timeLabel(preview.position); color: Theme.ink; font.pixelSize: 12; font.family: Theme.family; Layout.preferredWidth: 38 }
+                    Text { text: panel.timeLabel(seekSlider.pressed ? seekSlider.value : preview.position); color: Theme.ink; font.pixelSize: 12; font.family: Theme.family; Layout.preferredWidth: implicitWidth }
                     Slider {
                         id: seekSlider
                         objectName: "videoTimeline"
                         Layout.fillWidth: true; implicitHeight: 24
-                        from: 0; to: Math.max(1, preview.duration); value: preview.position
+                        from: 0; to: preview.duration; value: preview.position; stepSize: .1
                         Accessible.name: "播放位置"
                         onMoved: { client.markInteraction(); seekTimer.seekTo = value; seekTimer.restart(); }
                         background: Rectangle {
@@ -214,8 +250,8 @@ Rectangle {
                                 model: panel.row && panel.row.hits ? panel.row.hits : []
                                 delegate: Rectangle {
                                     required property var modelData
-                                    x: modelData.start / Math.max(1, preview.duration) * parent.width
-                                    width: Math.max(3, (modelData.end - modelData.start) / Math.max(1, preview.duration) * parent.width)
+                                    x: Math.min(preview.duration, Math.max(0, modelData.start)) / Math.max(.001, preview.duration) * parent.width
+                                    width: Math.max(0, Math.min(parent.width - x, Math.max(3, (modelData.end - Math.max(0, modelData.start)) / Math.max(.001, preview.duration) * parent.width)))
                                     y: -2; height: 8; radius: 2; color: Theme.selectionLine
                                 }
                             }

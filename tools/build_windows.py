@@ -81,7 +81,7 @@ def prepare_assets():
     with Image.open(icon) as source:
         source.save(ASSETS / 'EveryTensor.ico', sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128)])
     version = f'''VSVersionInfo(
-      ffi=FixedFileInfo(filevers=(0,1,0,3), prodvers=(0,1,0,3), mask=0x3f,
+      ffi=FixedFileInfo(filevers=(0,1,0,4), prodvers=(0,1,0,4), mask=0x3f,
                        flags=0x2, OS=0x40004, fileType=0x1, subtype=0, date=(0,0)),
       kids=[StringFileInfo([StringTable('040904B0', [
         StringStruct('CompanyName', 'EveryTensor contributors'),
@@ -105,7 +105,7 @@ def source_archive():
     files = [p for p in ROOT.iterdir() if p.is_file() and
              (p.suffix in ('.md', '.txt', '.cmd') or p.name in ('LICENSE', '.gitignore'))
              and p.name != '产品设计.txt']
-    for folder in ('everytensor', 'tools', 'packaging', '.github'):
+    for folder in ('everytensor', 'tools', 'tests', 'packaging', '.github'):
         files.extend(p for p in (ROOT / folder).rglob('*') if p.is_file()
                      and '__pycache__' not in p.parts and p.suffix != '.pyc')
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as archive:

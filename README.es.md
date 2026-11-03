@@ -4,7 +4,7 @@ Autor: **[sinsap](https://github.com/SinsapZ)**
 
 [简体中文](README.md) | [English](README.en.md) | [日本語](README.ja.md) | **Español**
 
-Versión preliminar para Windows · versión de desarrollo de main
+Versión de desarrollo para Windows · v0.1.0-alpha.4
 
 Cada archivo es un vector.
 
@@ -23,6 +23,8 @@ Los formatos incluyen TXT, Markdown, código fuente, PDF, DOCX, PPTX, XLSX, EPUB
 El índice guarda información de los archivos para las búsquedas. Puedes buscar cada archivo por su nombre cuando la aplicación lo encuentra. Para buscar contenido, la aplicación debe leerlo primero.
 
 ## Instalador para Windows
+
+La descarga siguiente corresponde a la versión publicada v0.1.0-alpha.3. Al compilar el código fuente actual se genera `release/windows/EveryTensor-0.1.0-alpha.4-windows-x64-setup.exe`.
 
 Ejecuta [EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.3/EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe) en Windows 10 1809 o posterior de 64 bits. Incluye Python, las dependencias de escritorio y el modelo de texto ligero; la instalación y la búsqueda de texto funcionan sin conexión. En el primer inicio, o desde la búsqueda multimodal de Ajustes, puedes instalar el modelo, el entorno de CPU y FFmpeg (unos 1,88 GB; reserva al menos 5 GiB libres). Permite descargar en segundo plano, pausar y reanudar, reintentar e importar un modelo compatible. Comprueba SHA-256 y las cuatro modalidades antes de activarlo. No hace falta instalar Python por separado; las búsquedas posteriores funcionan sin conexión.
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 import urllib.request
@@ -25,6 +26,18 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        with self.server.activity_lock:
+            self.server.active += 1
+            self.server.max_active = max(self.server.max_active, self.server.active)
+        try:
+            if self.path == '/latency':
+                time.sleep(.15)
+            self.serve_payload()
+        finally:
+            with self.server.activity_lock:
+                self.server.active -= 1
+
+    def serve_payload(self):
         range_header = self.headers.get('Range')
         self.server.ranges.append(range_header)
         start = int(range_header.split('=')[1].split('-')[0]) if range_header else 0
@@ -54,6 +67,8 @@ class InstallTests(unittest.TestCase):
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         cls.server.ranges = []
         cls.server.interrupted = False
+        cls.server.activity_lock = threading.Lock()
+        cls.server.active = cls.server.max_active = 0
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.base = f'http://127.0.0.1:{cls.server.server_port}'
@@ -90,6 +105,132 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(self.partial.exists())
         self.download()
         self.assertEqual(len(self.server.ranges), 1)
+
+    def test_bounded_parallel_download_and_cached_byte_accounting(self):
+        item = dict(url=self.base+'/latency', bytes=len(PAYLOAD), sha256=hashlib.sha256(PAYLOAD).hexdigest())
+        jobs = [(item, self.root / f'parallel-{i}.bin') for i in range(6)]
+        start = time.monotonic()
+        for i in range(6):
+            setup.download(item, self.root / f'serial-{i}.bin', self.cancel, lambda value: None, opener=self.opener)
+        serial = time.monotonic() - start
+        events = []
+        installer = setup.Installer(self.root, events.append, opener=self.opener)
+        self.server.max_active = 0
+        start = time.monotonic()
+        installer.fetch(jobs, len(PAYLOAD)*6)
+        parallel = time.monotonic() - start
+        self.assertEqual(self.server.max_active, 3)
+        self.assertLess(parallel, serial * .8)
+        self.assertEqual(events[-1]['received'], len(PAYLOAD)*6)
+        self.assertEqual(events[-1]['network_received'], len(PAYLOAD)*6)
+        self.assertEqual(events[-1]['completed_files'], 6)
+        self.assertTrue(all(0 <= event['received'] <= event['total'] for event in events))
+        for _, target in jobs:
+            self.assertEqual(target.read_bytes(), PAYLOAD)
+        requests = len(self.server.ranges)
+        installer.fetch(jobs, len(PAYLOAD)*6)
+        self.assertEqual(len(self.server.ranges), requests)
+        self.assertEqual(events[-1]['network_received'], 0)
+        print(f'\nControlled local HTTP latency: serial={serial:.3f}s, parallel={parallel:.3f}s, ratio={serial/parallel:.2f}x')
+
+    def test_parallel_failure_keeps_ready_unpublished(self):
+        item = dict(url=self.base, bytes=len(PAYLOAD), sha256='0'*64)
+        installer = setup.Installer(self.root, lambda event: None, opener=self.opener)
+        with self.assertRaises(ValueError):
+            installer.fetch([(item, self.root / f'bad-{i}.bin') for i in range(6)], len(PAYLOAD)*6)
+        self.assertTrue(installer.cancel.is_set())
+        self.assertFalse((installer.root / 'ready.json').exists())
+        self.assertFalse(any((self.root / f'bad-{i}.bin').exists() for i in range(6)))
+
+    def test_transfer_meter_excludes_cache_and_expires_stale_speed(self):
+        from everytensor.model_setup import TransferMeter
+        meter = TransferMeter()
+        meter.record(0, 10.)
+        # 900 cached bytes do not count as transferred network bytes.
+        meter.record(100, 12.)
+        sample = meter.snapshot(12., 1000, 2000, 'downloading')
+        self.assertEqual(sample['speed_bps'], 50.)
+        self.assertEqual(sample['eta_seconds'], 20.)
+        sample = meter.snapshot(20., 1000, 2000, 'downloading')
+        self.assertTrue(sample['stalled'])
+        self.assertEqual(sample['speed_bps'], 0.)
+        self.assertEqual(sample['eta_seconds'], -1)
+        self.assertEqual(meter.snapshot(13., 1000, 2000, 'checking')['speed_bps'], 0.)
+        meter.record(200, 21.)
+        self.assertFalse(meter.snapshot(21., 1100, 2000, 'downloading')['stalled'])
+
+    def test_connection_after_long_verification_gets_fresh_measurement_window(self):
+        from everytensor.model_setup import TransferMeter
+        meter = TransferMeter()
+        meter.record(0, 0., 'checking')
+        self.assertFalse(meter.snapshot(20., 900, 2000, 'checking')['stalled'])
+        meter.record(0, 20., 'connecting')
+        self.assertFalse(meter.snapshot(20., 900, 2000, 'connecting')['stalled'])
+        meter.record(100, 22., 'downloading')
+        self.assertEqual(meter.snapshot(22., 1000, 2000, 'downloading')['speed_bps'], 50.)
+        meter.record(100, 22.01, 'checking')
+        meter.record(100, 60., 'connecting')
+        self.assertFalse(meter.snapshot(60., 1000, 2000, 'connecting')['stalled'])
+        self.assertTrue(meter.snapshot(68., 1000, 2000, 'connecting')['stalled'])
+
+    def test_retry_status_is_visible(self):
+        statuses = []
+        item = dict(url=self.base+'/interrupt', bytes=len(PAYLOAD), sha256=hashlib.sha256(PAYLOAD).hexdigest())
+        setup.download(item, self.target, self.cancel, lambda value: None, opener=self.opener, status=statuses.append)
+        self.assertIn('retrying', statuses)
+        self.assertEqual(statuses[-1], 'checking')
+
+    def test_stalled_ui_updates_without_a_worker_event(self):
+        from PySide6.QtCore import QCoreApplication
+        from everytensor.model_setup import ModelSetup
+        app = QCoreApplication.instance() or QCoreApplication([])
+        with patch('everytensor.model_setup.time.monotonic', return_value=100.):
+            model = ModelSetup(self.root)
+        model._timer.stop()
+        try:
+            model._state.update(phase='downloading', received=0, total=1000)
+            model._events.put(('progress', dict(phase='downloading', received=0, total=1000,
+                                               transfer_state='downloading', network_received=0, measured_at=100.)))
+            with patch('everytensor.model_setup.time.monotonic', return_value=100.):
+                model.poll()
+            model._events.put(('progress', dict(phase='downloading', received=100, total=1000,
+                                               transfer_state='downloading', network_received=100, measured_at=102.)))
+            with patch('everytensor.model_setup.time.monotonic', return_value=102.):
+                model.poll()
+            self.assertEqual(model.state['speed_bps'], 50.)
+            with patch('everytensor.model_setup.time.monotonic', return_value=110.):
+                model.poll()
+            self.assertTrue(model.state['stalled'])
+            self.assertEqual(model.state['speed_bps'], 0.)
+            self.assertEqual(model.state['eta_seconds'], -1)
+        finally:
+            model.close()
+
+    def test_pause_flushes_throttled_byte_count(self):
+        from PySide6.QtCore import QCoreApplication
+        from everytensor import model_setup
+        app = QCoreApplication.instance() or QCoreApplication([])
+        model = model_setup.ModelSetup(self.root)
+        model._timer.stop()
+        class PausingInstaller:
+            def __init__(self, data, progress, cancel):
+                self.progress = progress
+            def run(self, local_model):
+                for count in (111, 222):
+                    self.progress(dict(phase='downloading', received=count, total=1000,
+                                       network_received=count, transfer_state='downloading'))
+                raise setup.Cancelled()
+        try:
+            with patch.object(model_setup, 'Installer', PausingInstaller), patch.object(model_setup.time, 'monotonic', return_value=100.):
+                model.start()
+                model._thread.join(timeout=2)
+                self.assertFalse(model._thread.is_alive())
+                model.poll()
+            self.assertEqual(model.state['phase'], 'paused')
+            self.assertEqual(model.state['received'], 222)
+            self.assertEqual(model.state['speed_bps'], 0.)
+        finally:
+            model.close()
 
     def test_server_ignoring_range_restarts(self):
         self.partial.write_bytes(PAYLOAD[:123])
