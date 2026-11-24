@@ -17,10 +17,14 @@ def within(path, root):
 
 
 def compact_roots(roots):
-    result = []
-    for root in sorted({canonical(p) for p in roots if p}, key=len):
-        if not any(within(root, other) for other in result):
-            result.append(root)
+    result, keys, prefixes = [], set(), []
+    for root in sorted({canonical(p) for p in roots if p}, key=lambda path: (len(path), path)):
+        key = os.path.normcase(root)
+        if key in keys or any(key.startswith(prefix) for prefix in prefixes):
+            continue
+        result.append(root)
+        keys.add(key)
+        prefixes.append(key.rstrip(os.sep) + os.sep)
     return result
 
 

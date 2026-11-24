@@ -24,9 +24,9 @@ Windows ソース開発版 · v0.1.0-alpha.4
 
 ## Windows インストーラー
 
-以下のダウンロードは公開済みの v0.1.0-alpha.3 です。現在のソースをビルドすると `release/windows/EveryTensor-0.1.0-alpha.4-windows-x64-setup.exe` が生成されます。
+???? Windows x64 ???????? [GitHub Releases](https://github.com/SinsapZ/everytensor/releases) ???????????????? v0.1.0-alpha.4 ???
 
-Windows 10 1809 以降の 64 ビット環境では [EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.3/EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe) を実行できます。Python、デスクトップ依存関係、軽量テキストモデルを同梱し、インストールとテキスト検索はオフラインで利用できます。初回起動時、または設定のマルチモーダル検索から、モデル・CPU 実行環境・FFmpeg を追加できます（約 1.88 GB、空き容量 5 GiB 以上を推奨）。バックグラウンドダウンロード、一時停止と再開、再試行、既存モデルの読み込みに対応しています。SHA-256 と各モダリティの動作を検証してから有効になります。Python の別途インストールは不要で、その後の検索はオフラインで動作します。
+Windows 10 1809 以降の 64 ビット環境では `EveryTensor-<version>-windows-x64-setup.exe` を実行できます。Python、デスクトップ依存関係、軽量テキストモデルを同梱し、インストールとテキスト検索はオフラインで利用できます。初回起動時、または設定のマルチモーダル検索から、モデル・CPU 実行環境・FFmpeg を追加できます（約 1.88 GB、空き容量 5 GiB 以上を推奨）。バックグラウンドダウンロード、一時停止と再開、再試行、既存モデルの読み込みに対応しています。SHA-256 と各モダリティの動作を検証してから有効になります。Python の別途インストールは不要で、その後の検索はオフラインで動作します。
 
 設定とインデックスは `%LOCALAPPDATA%\EveryTensor\.everytensor` に保存され、更新・アンインストール後も残ります。初回はアクセス可能な固定ドライブ全体が検索対象です。`Ctrl+,` で範囲を変更できます。ローカル成果物とチェックサムは `release/windows/` にあります。このビルドは未署名です。
 

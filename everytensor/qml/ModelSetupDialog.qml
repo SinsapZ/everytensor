@@ -25,7 +25,9 @@ Dialog {
     background: Rectangle { radius: 16; color: Theme.paper; border.color: Theme.line }
     Overlay.modal: Rectangle { color: "#50252722" }
     onClosed: modelSetup.dismiss()
-    contentItem: ColumnLayout {
+    onAboutToShow: formLoader.active = true
+    contentItem: Loader { id: formLoader; active: false; sourceComponent: dialog.form }
+    property Component form: ColumnLayout {
         spacing: 16
         RowLayout {
             Layout.fillWidth: true

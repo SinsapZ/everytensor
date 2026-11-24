@@ -3,11 +3,13 @@ import concurrent.futures
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtCore import QPersistentModelIndex
+from PySide6.QtCore import QEventLoop, QPersistentModelIndex, QTimer
 from PySide6.QtWidgets import QApplication
 
 from everytensor.client import Controller
@@ -57,6 +59,44 @@ class SearchPresentationTests(unittest.TestCase):
         self.assertIn('Beta', model.get(1)['excerpt'])
         self.assertTrue(model.get(1)['excerpt'].startswith('…'))
 
+    def test_mixed_removal_reorder_and_insert_preserve_surviving_indexes(self):
+        model = ResultModel()
+        model.replace([row(i) for i in (1, 2, 3, 4, 5)])
+        indexes = {i: QPersistentModelIndex(model.index(i-1)) for i in range(1, 6)}
+        model.replace([row(i) for i in (6, 4, 2, 7, 1)])
+        self.assertEqual([model.get(i)['fileId'] for i in range(5)], [6, 4, 2, 7, 1])
+        for fid, index in indexes.items():
+            self.assertEqual(index.isValid(), fid in (4, 2, 1))
+            if index.isValid():
+                self.assertEqual(model.get(index.row())['fileId'], fid)
+
+    def test_offscreen_presentations_are_lazy_and_invalidated_on_change(self):
+        model = ResultModel()
+        rows = [row(i, text='Alpha ' + 'context ' * 50 + 'Beta') for i in range(100)]
+        with patch.object(model, 'presentation', wraps=model.presentation) as present:
+            model.replace(rows, 'Alpha')
+            self.assertEqual(present.call_count, 0)
+            self.assertIn('Alpha', model.get(12)['excerpt'])
+            model.get(12)
+            self.assertEqual(present.call_count, 1)
+            model.replace(rows, 'Beta')
+            self.assertEqual(model.get(12)['excerpt'][-4:], 'Beta')
+            self.assertEqual(present.call_count, 2)
+            rows[12] = dict(rows[12], text='Different evidence')
+            model.replace(rows, 'Beta')
+            self.assertEqual(model.get(12)['excerpt'], 'Different evidence')
+
+    def test_thumbnail_override_survives_rerank_until_file_version_changes(self):
+        model = ResultModel()
+        rows = [row(1, path='C:/notes/page.pdf', size=10, mtime=2), row(2)]
+        role = next(key for key, value in model.roleNames().items() if value == b'thumbnailSource')
+        model.replace(rows)
+        model.set_thumbnail(1, 'image://preview/cached')
+        model.replace(rows[::-1], 'new query')
+        self.assertEqual(model.data(model.index(1), role), 'image://preview/cached')
+        model.replace([rows[1], dict(rows[0], size=12)])
+        self.assertTrue(model.data(model.index(1), role).startswith('image://thumb/'))
+
 
 class SearchRecoveryTests(unittest.TestCase):
     @classmethod
@@ -104,6 +144,38 @@ class SearchRecoveryTests(unittest.TestCase):
         self.client.poll()
         self.assertEqual(self.client.searchError, '语义查询失败')
         self.assertEqual(self.client.results.count, 1)
+
+    def test_failed_final_keeps_partial_rows_and_only_publishes_once(self):
+        publications = []
+        self.client.rowsChanged.connect(lambda: publications.append(self.client.results.count))
+        for kind, value in [('names_partial', [row(2)]), ('names', OSError('unavailable'))]:
+            future = concurrent.futures.Future()
+            if isinstance(value, Exception):
+                future.set_exception(value)
+            else:
+                future.set_result(value)
+            self.client.futures.put((kind, self.client.generation, future))
+        self.client.poll()
+        self.assertEqual(publications, [1])
+        self.assertEqual(self.client.selectedId, 2)
+        self.assertTrue(self.client.searchError)
+
+    def test_worker_event_wakes_idle_client_and_honors_refresh_deadline(self):
+        calls = []
+        loop = QEventLoop()
+        def refresh():
+            calls.append(time.monotonic())
+            loop.quit()
+        self.client._last_refresh = time.monotonic() - .8
+        self.client._refresh = refresh
+        producer = threading.Thread(target=lambda: self.client.events.put(dict(type='index_changed')))
+        producer.start()
+        producer.join()
+        QTimer.singleShot(2000, loop, loop.quit)
+        loop.exec()
+        self.assertTrue(calls)
+        self.assertGreaterEqual(calls[0], self.client._last_refresh + 1.)
+        self.assertFalse(self.client._poll_timer.isActive())
 
     def test_retry_keeps_current_results_and_manual_selection(self):
         self.client._publish([row(1), row(2)])

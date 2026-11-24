@@ -50,6 +50,67 @@ class VideoPreviewTests(unittest.TestCase):
             time.sleep(.005)
         self.assertTrue(condition())
 
+    def text_row(self, file_id):
+        return dict(self.row, file_id=file_id, kind='document', text=f'Document {file_id}',
+                    location={'line': 1})
+
+    def test_keyboard_burst_submits_only_the_final_preview(self):
+        updates = []
+        self.preview.changed.connect(lambda: updates.append((self.preview.loading, self.preview.text)))
+        with patch.object(self.preview, '_render', wraps=self.preview._render) as render:
+            for file_id in range(2, 14):
+                self.preview.setRow(self.text_row(file_id))
+            self.assertEqual(self.preview._row['file_id'], 13)
+            self.assertEqual(updates, [(True, '')])
+            render.assert_not_called()
+            self.wait_for(lambda: not self.preview.loading)
+            render.assert_called_once()
+            self.assertEqual(render.call_args.args[0]['file_id'], 13)
+            self.assertEqual(updates[-1], (False, 'Document 13'))
+
+    def test_changed_file_rejects_a_previous_completion_before_dispatch(self):
+        self.preview.setRow(self.text_row(2))
+        self.wait_for(lambda: not self.preview.loading)
+        previous_token = self.preview._token
+        self.preview.setRow(self.text_row(3))
+        self.assertTrue(self.preview.loading)
+        self.assertEqual(self.preview.text, '')
+        self.preview.completed.emit(previous_token, {'text': 'old result', 'location': {'line': 2}})
+        self.assertTrue(self.preview.loading)
+        self.assertEqual(self.preview.text, '')
+        self.wait_for(lambda: not self.preview.loading)
+        self.assertEqual(self.preview.text, 'Document 3')
+
+    def test_clear_and_close_cancel_pending_submission(self):
+        with patch.object(self.preview, '_render') as render:
+            self.preview.setRow(self.text_row(2))
+            self.preview.setRow({})
+            self.assertFalse(self.preview.loading)
+            self.app.processEvents()
+            render.assert_not_called()
+            self.preview.setRow(self.text_row(3))
+            self.preview.close()
+            self.app.processEvents()
+            render.assert_not_called()
+
+    def test_deferred_raster_reads_latest_bounds_and_allows_retry_after_error(self):
+        row = dict(self.row, kind='image', path=str(self.path.with_suffix('.jpg')))
+        with patch.object(self.preview, '_render', side_effect=[
+                OSError('fixture error'), {'text': 'ready', 'location': row['location']}]) as render:
+            self.preview.setRow(row)
+            self.preview.setBounds(360, 240)
+            self.preview.setScale(1.5)
+            self.assertFalse(self.preview._resize.isActive())
+            self.wait_for(lambda: not self.preview.loading)
+            self.assertTrue(self.preview.error)
+            self.assertEqual(render.call_args.args[1], (540, 360))
+            self.preview.setRow(row)
+            self.assertTrue(self.preview.loading)
+            self.assertFalse(self.preview.error)
+            self.wait_for(lambda: not self.preview.loading)
+            self.assertEqual(self.preview.text, 'ready')
+            self.assertEqual(render.call_count, 2)
+
     def test_ranges_center_clamp_and_reach_end(self):
         with patch.object(self.preview, '_make_frames'):
             self.complete()

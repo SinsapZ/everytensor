@@ -24,9 +24,9 @@ El índice guarda información de los archivos para las búsquedas. Puedes busca
 
 ## Instalador para Windows
 
-La descarga siguiente corresponde a la versión publicada v0.1.0-alpha.3. Al compilar el código fuente actual se genera `release/windows/EveryTensor-0.1.0-alpha.4-windows-x64-setup.exe`.
+Descarga el instalador m?s reciente para Windows x64 desde [GitHub Releases](https://github.com/SinsapZ/everytensor/releases). El c?digo fuente actual corresponde a v0.1.0-alpha.4.
 
-Ejecuta [EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe](https://github.com/SinsapZ/everytensor/releases/download/v0.1.0-alpha.3/EveryTensor-0.1.0-alpha.3-windows-x64-setup.exe) en Windows 10 1809 o posterior de 64 bits. Incluye Python, las dependencias de escritorio y el modelo de texto ligero; la instalación y la búsqueda de texto funcionan sin conexión. En el primer inicio, o desde la búsqueda multimodal de Ajustes, puedes instalar el modelo, el entorno de CPU y FFmpeg (unos 1,88 GB; reserva al menos 5 GiB libres). Permite descargar en segundo plano, pausar y reanudar, reintentar e importar un modelo compatible. Comprueba SHA-256 y las cuatro modalidades antes de activarlo. No hace falta instalar Python por separado; las búsquedas posteriores funcionan sin conexión.
+Ejecuta `EveryTensor-<version>-windows-x64-setup.exe` en Windows 10 1809 o posterior de 64 bits. Incluye Python, las dependencias de escritorio y el modelo de texto ligero; la instalación y la búsqueda de texto funcionan sin conexión. En el primer inicio, o desde la búsqueda multimodal de Ajustes, puedes instalar el modelo, el entorno de CPU y FFmpeg (unos 1,88 GB; reserva al menos 5 GiB libres). Permite descargar en segundo plano, pausar y reanudar, reintentar e importar un modelo compatible. Comprueba SHA-256 y las cuatro modalidades antes de activarlo. No hace falta instalar Python por separado; las búsquedas posteriores funcionan sin conexión.
 
 Los ajustes y el índice se guardan en `%LOCALAPPDATA%\EveryTensor\.everytensor` y se conservan al actualizar o desinstalar. El primer inicio busca en las unidades locales fijas accesibles; cambia el alcance con `Ctrl+,`. Los archivos y sus sumas de comprobación están en `release/windows/`. Esta compilación no tiene firma digital.
 

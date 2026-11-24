@@ -18,7 +18,8 @@ Rectangle {
     readonly property bool isDocument: hasRow && row.kind === "document"
     readonly property bool isPdf: hasRow && String(row.name).toLowerCase().endsWith(".pdf")
     readonly property string path: hasRow ? String(row.path || row.fullPath || "") : ""
-    readonly property bool compactHeader: width < 700
+    // Stack controls only when keeping them beside the title would leave too little text.
+    readonly property bool compactHeader: width < 500
     onPathChanged: {
         seekTimer.stop();
         imageScroll.contentY = 0;
@@ -38,13 +39,13 @@ Rectangle {
         return t >= 3600 ? Math.floor(t / 3600) + ":" + suffix : suffix;
     }
     function resizePreview() {
+        if (!panel.visible || viewport.width <= 0 || viewport.height <= 0) return;
         var inset = panel.isVideo ? 16 : 40;
         preview.setBounds(Math.max(100, Math.floor(viewport.width - inset)), Math.max(100, Math.floor(viewport.height - inset)));
     }
-    onWidthChanged: boundsTimer.restart()
-    onHeightChanged: boundsTimer.restart()
-    Timer { id: boundsTimer; interval: 100; onTriggered: panel.resizePreview() }
-    Component.onCompleted: boundsTimer.start()
+    onVisibleChanged: Qt.callLater(panel.resizePreview)
+    onIsVideoChanged: Qt.callLater(panel.resizePreview)
+    Component.onCompleted: Qt.callLater(panel.resizePreview)
 
     ColumnLayout {
         anchors.fill: parent
@@ -52,14 +53,14 @@ Rectangle {
         Item {
             objectName: "previewHeader"
             Layout.fillWidth: true
-            Layout.preferredHeight: panel.compactHeader ? 124 : 88
+            Layout.preferredHeight: panel.compactHeader ? 108 : 74
             visible: panel.hasRow
             Column {
                 id: fileHeading
                 anchors.left: parent.left; anchors.leftMargin: 22
                 anchors.right: panel.compactHeader ? parent.right : actions.left; anchors.rightMargin: 22
-                y: panel.compactHeader ? 17 : (parent.height - height) / 2
-                spacing: 6
+                y: panel.compactHeader ? 12 : (parent.height - height) / 2
+                spacing: 4
                 Text { objectName: "previewTitle"; width: parent.width; text: panel.hasRow ? panel.row.name : ""; color: Theme.ink; font.family: Theme.family; font.pixelSize: 16; font.weight: Font.DemiBold; elide: Text.ElideMiddle }
                 Text { objectName: "previewPath"; width: parent.width; text: panel.hasRow && panel.row.parentPath ? panel.row.parentPath : panel.path.replace(/[^\\/]+$/, "").replace(/[\\/]$/, ""); color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12; elide: Text.ElideMiddle }
                 HoverHandler { id: headingHover }
@@ -71,7 +72,7 @@ Rectangle {
                 anchors.right: parent.right; anchors.rightMargin: 18
                 y: panel.compactHeader ? parent.height - height - 12 : (parent.height - height) / 2
                 spacing: 5
-                DeskButton { objectName: "copyLocationButton"; text: "复制位置"; iconName: "copy"; subtle: true; tooltip: "复制文件路径及匹配位置"; onClicked: client.copyLocation() }
+                DeskButton { objectName: "copyLocationButton"; text: panel.width < 700 ? "" : "复制位置"; iconName: "copy"; subtle: true; tooltip: "复制文件路径及匹配位置"; onClicked: client.copyLocation() }
                 DeskButton { objectName: "revealButton"; iconName: "folder"; subtle: true; tooltip: "在文件夹中显示"; onClicked: client.revealSelected() }
                 DeskButton { objectName: "fitButton"; visible: panel.isPdf; iconName: "fit"; subtle: true; checked: preview.fitWidth; Accessible.checkable: true; Accessible.checked: checked; tooltip: preview.fitWidth ? "适合整页" : "适合宽度"; onClicked: preview.setFitWidth(!preview.fitWidth) }
                 DeskButton { objectName: "openButton"; text: panel.isMedia ? "播放" : "打开"; iconName: panel.isMedia ? "play" : "arrow"; primary: true; onClicked: panel.isMedia ? preview.open() : client.openSelected() }
@@ -86,8 +87,8 @@ Rectangle {
             Layout.margins: 1
             color: Theme.soft
             clip: true
-            onWidthChanged: boundsTimer.restart()
-            onHeightChanged: boundsTimer.restart()
+            onWidthChanged: Qt.callLater(panel.resizePreview)
+            onHeightChanged: Qt.callLater(panel.resizePreview)
 
             Flickable {
                 id: imageScroll

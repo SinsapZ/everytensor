@@ -85,7 +85,6 @@ class ModelSetup(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(100)
         self._timer.timeout.connect(self.poll)
-        self._timer.start()
         os.environ['EVERYTENSOR_COMPONENTS'] = str(component_root(data))
 
     state = Property('QVariantMap', lambda s: dict(s._state), notify=changed)
@@ -152,6 +151,7 @@ class ModelSetup(QObject):
             except Exception as exc:
                 finish('error', str(exc))
         self._thread = threading.Thread(target=work, name='optional-model-install')
+        self._timer.start()
         self._thread.start()
 
     @Slot()
@@ -203,6 +203,9 @@ class ModelSetup(QObject):
                 self._save()
                 self._saved_at = time.monotonic()
             self.changed.emit()
+
+        if not self.active:
+            self._timer.stop()
 
     def close(self):
         self._timer.stop()

@@ -18,7 +18,7 @@ Dialog {
     Overlay.modal: Rectangle { color: "#50252722"; Behavior on opacity { NumberAnimation { duration: Theme.normal } } }
     enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.normal } }
     exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: Theme.fast } }
-    onOpened: {
+    onAboutToShow: {
         draft = JSON.parse(JSON.stringify(client.settings || {}));
         localError = ""; submitting = false;
         budgetField.text = String(draft.budget_gib || 8);
@@ -48,10 +48,10 @@ Dialog {
             Text { text: "搜索与索引"; color: Theme.ink; font.family: Theme.family; font.pixelSize: 23; font.weight: Font.DemiBold; Layout.fillWidth: true }
             DeskButton { iconName: "close"; subtle: true; tooltip: "关闭设置"; allowTooltipsDuringModal: true; enabled: !dialog.submitting; onClicked: dialog.close() }
         }
-        Text { text: "让搜索按你的习惯工作。"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 13; Layout.topMargin: 6; Layout.bottomMargin: 24 }
         ScrollView {
             id: settingsViewport
             objectName: "settingsScroll"
+            Layout.topMargin: 16
             Layout.fillWidth: true; Layout.fillHeight: true
             clip: true
             contentWidth: availableWidth

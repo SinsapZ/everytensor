@@ -19,11 +19,30 @@ import sys
 import threading
 import time
 
-from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, Property, Qt, QTimer, Signal, Slot
 
 from . import catalog, media, store, locations
 from .backend import Backend, NullBackend
 from .client_models import ResultModel, location_label
+
+
+class _ReplyQueue(queue.Queue):
+    """Wake the Qt thread once when the first reply arrives in an empty queue."""
+    def __init__(self, wake):
+        super().__init__()
+        self.wake = wake
+
+    def _put(self, item):
+        # Queue.put holds its mutex here. The wake signal uses a queued Qt
+        # connection, so its receiver never tries to read under this lock.
+        was_empty = not self.queue
+        super()._put(item)
+        if was_empty and self.wake:
+            self.wake()
+
+    def stop_waking(self):
+        with self.mutex:
+            self.wake = None
 
 
 class Controller(QObject):
@@ -36,6 +55,7 @@ class Controller(QObject):
     rowsAboutToChange = Signal()
     rowsChanged = Signal()
     _modelActivated = Signal(str)
+    _replyReady = Signal()
 
     def __init__(self, data: Path, start_backend=True, parent=None):
         super().__init__(parent)
@@ -62,6 +82,7 @@ class Controller(QObject):
         self.log.addHandler(self._log_handler)
         self.log.setLevel(logging.INFO)
         self._query = self._kind = ''
+        self._manual_kind = ''
         self._generation = self._preview_token = 0
         self._manual_generation = -1
         self._position_choice = None
@@ -95,17 +116,16 @@ class Controller(QObject):
         self._pools = {name: concurrent.futures.ThreadPoolExecutor(1, thread_name_prefix='client-'+name)
                        for name in ('names', 'keywords')}
         self._jobs = {}
-        self.futures = queue.Queue()
-        self.events = queue.Queue()
-        self.commands = Backend(self.db_path, self.events) if start_backend else NullBackend()
+        self._replyReady.connect(self._schedule_poll, Qt.ConnectionType.QueuedConnection)
+        self.futures = _ReplyQueue(self._replyReady.emit)
+        self.events = _ReplyQueue(self._replyReady.emit)
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
-        self._debounce.setInterval(220)
         self._debounce.timeout.connect(self._issue_semantic)
         self._poll_timer = QTimer(self)
-        self._poll_timer.setInterval(20)
+        self._poll_timer.setSingleShot(True)
         self._poll_timer.timeout.connect(self.poll)
-        self._poll_timer.start()
+        self.commands = Backend(self.db_path, self.events) if start_backend else NullBackend()
 
     def _read_settings(self):
         return dict(scope=store.setting(self.db, 'scope', 'computer'),
@@ -133,7 +153,7 @@ class Controller(QObject):
         if not self._selected:
             return {}
         value = dict(self._selected)
-        value.update(ResultModel.presentation(self._selected, self._query))
+        value.update(self._model.selected_presentation(self._selected, self._query))
         return value
 
     @property
@@ -239,21 +259,33 @@ class Controller(QObject):
     def setQuery(self, value):
         if self._closing or value == self._query:
             return
+        previous = self._query
         self._query = value
         requested = store.query_intent(value)[0]
         if not requested and Path(value.strip()).suffix:
             guessed = media.kind(value.strip())
             requested = guessed if guessed != 'other' else ''
-        if requested:
-            self._kind = requested
-        self._changed()
+        # An empty field keeps the current tab available for browsing. The
+        # next nonempty question gets its own inferred type or the user's tab.
+        if value.strip():
+            self._kind = requested or self._manual_kind
+        # A paste or a committed phrase arrives in one text edit. Count only
+        # the inserted span so a single keystroke inside a long query still
+        # gets the normal typing debounce.
+        prefix = len(os.path.commonprefix((previous, value)))
+        tail = value[prefix:]
+        suffix = len(os.path.commonprefix((previous[prefix:][::-1], tail[::-1])))
+        self._changed(60 if len(tail) - suffix >= 8 else 220)
 
     @Slot(str)
     def setKind(self, value):
-        if self._closing or value == self._kind or value not in ('', 'document', 'image', 'video', 'code', 'audio'):
+        if self._closing or value not in ('', 'document', 'image', 'video', 'code', 'audio'):
+            return
+        self._manual_kind = value
+        if value == self._kind:
             return
         self._kind = value
-        self._changed()
+        self._changed(0)
 
     def _cancel_readers(self):
         self._cancel.set()
@@ -262,7 +294,7 @@ class Controller(QObject):
             job.cancel()
         self.commands.put({'action': 'cancel_search', 'id': self._generation})
 
-    def _changed(self):
+    def _changed(self, semantic_delay_ms=220):
         self._generation += 1
         self._manual_generation = -1
         self._position_choice = None
@@ -276,12 +308,13 @@ class Controller(QObject):
         self._semantic_stage, self._semantic_coverage = '', {}
         self._search_error = ''
         self._channel_errors.clear()
-        self._publish([])
         if self._query.strip() or self._kind:
+            # The reader replies use queued delivery. Let them start while Qt
+            # releases old delegates, and show the pending state immediately.
             self._issue_lexical()
             if self._query.strip():
-                self._debounce.start()
-        self.stateChanged.emit()
+                self._debounce.start(semantic_delay_ms)
+        self._publish([])
 
     def _issue_lexical(self):
         generation, query, kind, limit = self._generation, self._query, self._kind, self._limit+1
@@ -327,7 +360,7 @@ class Controller(QObject):
             return
         self._inflight = True
         self.commands.put(dict(action='search', id=self._generation, query=self._query,
-                               kind=self._kind, limit=self._limit+1, channels=True))
+                               kind=self._kind, limit=self._limit+1, channels=True, semantic_only=True))
         self.stateChanged.emit()
 
     def _set_channel(self, channel, rows, complete=True):
@@ -360,15 +393,21 @@ class Controller(QObject):
         manual = self._manual_generation == self._generation
         selected_id = self.selectedId if manual else -1
         self._rows = rows
-        selected = next((row for row in rows if row['file_id'] == selected_id), None)
-        if selected is not None:
-            index = next(i for i, row in enumerate(rows) if row['file_id'] == selected_id)
+        selected = rows[0] if rows else {}
+        if manual and selected_id >= 0:
+            index = next((i for i, row in enumerate(rows) if row['file_id'] == selected_id), -1)
+            if index >= 0:
+                selected = rows[index]
             if index >= self._visible:
                 self._visible = (index//100+1)*100
-        self.rowsAboutToChange.emit()
-        self._model.replace(rows[:self._visible], self._query)
-        self.rowsChanged.emit()
-        self._select(selected or (rows[0] if rows else {}))
+        visible = rows[:self._visible]
+        if not self._model.matches(visible, self._query):
+            self.rowsAboutToChange.emit()
+            self._model.replace(visible, self._query)
+            self.rowsChanged.emit()
+            self._select(selected)
+        elif selected.get('file_id', -1) != self.selectedId:
+            self._select(selected)
         self.stateChanged.emit()
 
     def _select(self, row):
@@ -598,7 +637,9 @@ class Controller(QObject):
 
     def _handle_event(self, event):
         typ = event.get('type')
-        if typ == 'results' and event.get('id') == self._generation:
+        if typ == 'results':
+            if event.get('id') != self._generation:
+                return
             if (self._semantic_stage == 'full' and event.get('semantic_stage') == 'quick'
                     and not event.get('full_checked')):
                 return
@@ -618,6 +659,7 @@ class Controller(QObject):
                 self._merge()
             else:
                 self._publish(event.get('rows', []))
+            return
         elif typ == 'model':
             self._model_state = event.get('state', 'ready' if event.get('ready') else 'error')
             self._model_status = event.get('text', '')
@@ -667,10 +709,17 @@ class Controller(QObject):
         self.stateChanged.emit()
 
     @Slot()
+    def _schedule_poll(self):
+        if not self._closing and (not self.futures.empty() or not self.events.empty()):
+            self._poll_timer.start(0)
+
+    @Slot()
     def poll(self):
         if self._closing:
             return
         deadline = time.monotonic()+.006
+        received_lexical = False
+        prioritize = False
         while time.monotonic() < deadline:
             try:
                 typ, generation, future = self.futures.get_nowait()
@@ -685,12 +734,8 @@ class Controller(QObject):
                     self._pending.discard(channel)
                     self._set_search_error(channel)
                 self._set_channel(channel, rows, complete=typ != 'names_partial')
-                if channel in ('names', 'keywords'):
-                    candidates = [row for row in self._channels['keywords'] if row.get('content_source') == 'live']
-                    candidates.extend(self._channels['names'])
-                    self.commands.put(dict(action='prioritize', id=generation, kind=self._kind,
-                                           files=list(dict.fromkeys(row['file_id'] for row in candidates))[:64]))
-                self._merge()
+                prioritize = True
+                received_lexical = True
             except concurrent.futures.CancelledError:
                 pass
             except Exception:
@@ -698,7 +743,16 @@ class Controller(QObject):
                 self._pending.discard('names' if typ == 'names_partial' else typ)
                 self._set_search_error('names' if typ == 'names_partial' else typ,
                                        '文件名搜索遇到问题，请重试' if typ.startswith('names') else '正文搜索遇到问题，请重试')
-                self._merge()
+                received_lexical = True
+        # Partial filename batches are cumulative. Publish the newest snapshot
+        # of each channel available in this turn, before handling backend events.
+        if prioritize:
+            candidates = [row for row in self._channels['keywords'] if row.get('content_source') == 'live']
+            candidates.extend(self._channels['names'])
+            self.commands.put(dict(action='prioritize', id=self._generation, kind=self._kind,
+                                   files=list(dict.fromkeys(row['file_id'] for row in candidates))[:64]))
+        if received_lexical:
+            self._merge()
         deadline = time.monotonic()+.006
         while time.monotonic() < deadline:
             try:
@@ -709,9 +763,15 @@ class Controller(QObject):
                 self._handle_event(event)
             except Exception:
                 self.log.exception('Worker event failed: %s', event.get('type'))
-        if (self._dirty and (self._query.strip() or self._kind) and not self._debounce.isActive()
-                and not self._waiting_refresh() and time.monotonic()-self._last_refresh >= 1.):
-            self._refresh()
+        if not self.futures.empty() or not self.events.empty():
+            self._poll_timer.start(1)
+        elif (self._dirty and (self._query.strip() or self._kind) and not self._debounce.isActive()
+              and not self._waiting_refresh()):
+            remaining = self._last_refresh + 1. - time.monotonic()
+            if remaining <= 0:
+                self._refresh()
+            else:
+                self._poll_timer.start(max(1, int(remaining * 1000) + 1))
 
     @Slot(str)
     def _finish_model_activation(self, path):
@@ -722,7 +782,8 @@ class Controller(QObject):
             pending = list(self.commands.messages) if isinstance(self.commands, NullBackend) else []
             store.set_setting(self.db, 'model', path)
             self._settings = self._read_settings()
-            self.events = queue.Queue()
+            self.events.stop_waking()
+            self.events = _ReplyQueue(self._replyReady.emit)
             self.commands = Backend(self.db_path, self.events)
             for command in pending:
                 self.commands.put(command)
@@ -731,6 +792,7 @@ class Controller(QObject):
             self._model_state, self._model_status = 'preparing', '正在启用多模态搜索'
             self._inflight = False
             self._dirty = True
+            self._poll_timer.start(0)
             if self._paused:
                 self.commands.put({'action': 'pause', 'value': True})
             self.notification.emit('多模态模型已安装，正在准备图片和音视频搜索')
@@ -760,6 +822,8 @@ class Controller(QObject):
         if self._closing:
             return
         self._closing = True
+        self.futures.stop_waking()
+        self.events.stop_waking()
         self._debounce.stop()
         self._poll_timer.stop()
         self._cancel.set()

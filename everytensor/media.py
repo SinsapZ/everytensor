@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -267,7 +268,35 @@ def extract(path, *, resume=None):
         source.close()
 
 
-def preview_image(path, loc, bound=(720, 700)):
+def _photo_thumbnail(original, bound):
+    from PIL import Image, ImageOps
+    rotated = original.getexif().get(274) in (5, 6, 7, 8)
+    size = original.size[::-1] if rotated else original.size
+    width, height = bound
+    if size[0] <= width and size[1] <= height:
+        image = ImageOps.exif_transpose(original).convert('RGB')
+    else:
+        # Match Pillow.thumbnail's closest-aspect rounding in display coordinates
+        # before draft() rounds the encoded dimensions to decoder blocks.
+        aspect = size[0] / size[1]
+        if width / height >= aspect:
+            ideal = height * aspect
+            width = max(1, min((math.floor(ideal), math.ceil(ideal)),
+                               key=lambda value: abs(aspect - value / height)))
+        else:
+            ideal = width / aspect
+            height = max(1, min((math.floor(ideal), math.ceil(ideal)),
+                                key=lambda value: abs(aspect - width / value) if value else 0))
+        target = (height, width) if rotated else (width, height)
+        draft = original.draft(None, (target[0] * 2, target[1] * 2))
+        reduced = original.resize(target, Image.Resampling.BICUBIC,
+                                  box=draft[1] if draft else None, reducing_gap=2.0)
+        image = ImageOps.exif_transpose(reduced).convert('RGB')
+    image.info['original_size'] = size
+    return image
+
+
+def preview_image(path, loc, bound=(720, 700), *, display_thumbnail=False):
     from PIL import Image, ImageOps
     if Path(path).suffix.lower() == '.pdf':
         import fitz
@@ -281,6 +310,8 @@ def preview_image(path, loc, bound=(720, 700)):
         img.thumbnail(bound)
         return img
     with Image.open(path) as original:
+        if display_thumbnail and original.format == 'JPEG' and original.mode in ('L', 'RGB'):
+            return _photo_thumbnail(original, bound)
         img = ImageOps.exif_transpose(original).convert('RGB')
         size = img.size
         img.thumbnail(bound)

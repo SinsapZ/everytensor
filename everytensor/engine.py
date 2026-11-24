@@ -37,8 +37,8 @@ def runtime_issues():
 
 
 class Embedder:
-    text_batch_size = 4
-    image_batch_size = 1
+    text_batch_size = 8
+    image_batch_size = 2
     def __init__(self, path, device=None):
         privacy.configure_offline()
         self.dimensions = 768
@@ -83,7 +83,7 @@ class Embedder:
     def batch_limit(self, mode):
         maximum = self.text_batch_size if mode == 'text' else self.image_batch_size if mode == 'image' else 1
         if self.device != 'cuda':
-            return min(maximum, 2)
+            return min(maximum, 2 if mode == 'text' else 1)
         import torch
         try:
             free, _ = torch.cuda.mem_get_info()
@@ -391,12 +391,13 @@ def worker(db_path, commands, events):
     model_state('preparing' if model_path else 'missing',
                 '已找到本地模型，正在准备语义搜索…' if model_path else '未找到本地模型，文件名搜索可用')
 
-    def checkpoint(wait=True):
+    def checkpoint(wait=True, *, timeout=0):
         nonlocal request, paused, model, model_path, model_error, dimensions, roots, vector_blocked
         nonlocal signature_path, expected_model
         while True:
             try:
-                cmd = commands.get_nowait()
+                cmd = commands.get(timeout=timeout) if timeout else commands.get_nowait()
+                timeout = 0
             except queue.Empty:
                 break
             action = cmd['action']
@@ -487,63 +488,72 @@ def worker(db_path, commands, events):
             names = [] if req.get('channels') else store.names(db, query, kind, limit)
             semantic, error, semantic_complete = [], model_error if model is None else '', False
             quick_rows, quick_complete = [], False
+            newly_encoded = None
             def cancelled():
                 return getattr(commands, 'latest_id', req['id']) != req['id']
-            if query.strip() and not cancelled():
-                if quick and quick.model is not None:
-                    try:
-                        q = quick.model.encode(query=query.strip())
-                        quick_db.execute('BEGIN')
-                        try:
-                            quick_rows = quick_search.search(quick_db, q, quick.model.key, kind, limit, cancelled)
-                            # Only valid candidates in this request's current
-                            # scope make the quick tier available. Vectors from
-                            # a previous scope cannot complete the new query.
-                            quick_complete = bool(quick_rows)
-                            if not quick_complete and not inventory.scanning:
-                                quick_complete = not quick_index.has_eligible_files(quick_db, kind)
-                        finally:
-                            quick_db.rollback()
-                        if quick_complete and model is not None and not cancelled():
-                            events.put({'type': 'results', 'id': req['id'],
-                                'rows': store.fuse(names, lexical, quick_rows, query=query),
-                                'semantic_rows': quick_rows, 'channels': req.get('channels', False),
-                                'semantic': True, 'error': '', 'partial': True,
-                                'semantic_pending': False, 'semantic_stage': 'quick',
-                                'semantic_coverage': quick.coverage})
-                    except Exception:
-                        log.exception('Quick semantic query failed')
+
+            def publish(rows, **state):
+                event = dict(type='results', id=req['id'], semantic_rows=rows,
+                             channels=req.get('channels', False),
+                             semantic_coverage=quick.coverage if quick else {}, **state)
+                # The desktop already fuses its independent lexical channels.
+                # Older callers can still request the ready-to-display rows.
+                if not (event['channels'] and req.get('semantic_only')):
+                    event['rows'] = store.fuse(names, lexical, rows, query=query)
+                events.put(event)
+
+            def run_quick(partial):
+                if not quick or quick.model is None or cancelled():
+                    return [], False
                 try:
-                    # The encoder needs the whole request: stripping "papers",
-                    # "videos", etc. discards semantic intent, not just syntax.
-                    # Topic extraction is only for literal matching and filters.
-                    semantic_query = query.strip()
+                    q = quick.model.encode(query=semantic_query)
+                    with store.read_snapshot(quick_db):
+                        rows = quick_search.search(quick_db, q, quick.model.key, kind, limit, cancelled)
+                        complete = bool(rows) or (not inventory.scanning and
+                                                  not quick_index.has_eligible_files(quick_db, kind))
+                    if complete and partial and model is not None and not cancelled():
+                        publish(rows, semantic=True, error='', partial=True,
+                                semantic_pending=False, semantic_stage='quick')
+                    return rows, complete
+                except Exception:
+                    log.exception('Quick semantic query failed')
+                    return [], False
+
+            semantic_query = query.strip()
+            if semantic_query and not cancelled():
+                cached = None
+                search_model = ''
+                try:
                     if model is None and signature_path != model_path:
-                        signature_path = model_path
                         expected_model = query_vectors.model_signature(model_path) if model_path else ''
+                        signature_path = model_path
                     search_model = model.key if model is not None else expected_model
                     key = (search_model, dimensions, semantic_query)
-                    if key not in query_cache and search_model:
+                    cached = query_cache.get(key)
+                    if cached is None and search_model:
                         cached = query_vectors.get(db, search_model, semantic_query, dimensions)
-                        if cached is not None:
-                            query_cache[key] = cached
-                    if key not in query_cache and model is not None:
-                        query_cache[key] = model.encode(query=semantic_query)
-                        try:
-                            query_vectors.put(db, search_model, semantic_query, query_cache[key])
-                        except Exception:
-                            log.warning('Could not persist query vector', exc_info=True)
-                    if key in query_cache:
+                except Exception:
+                    log.warning('Could not read cached query vector', exc_info=True)
+                # A known full query can go directly to the authoritative index.
+                # Keep the progressive Quick reply for a new encoder invocation.
+                quick_first = cached is None
+                if quick_first:
+                    quick_rows, quick_complete = run_quick(partial=True)
+                try:
+                    if cached is None and model is not None and not cancelled():
+                        cached = model.encode(query=semantic_query)
+                        newly_encoded = cached
+                    if cached is not None and not cancelled():
+                        query_cache[key] = cached
                         query_cache.move_to_end(key)
                         if len(query_cache) > 32:
                             query_cache.popitem(last=False)
-                    if key in query_cache and not cancelled():
                         db.set_progress_handler(lambda: int(cancelled()), 2000)
                         try:
                             # Score the complete existing vector index before
                             # replacing lexical results. The first physical block
                             # alone is not a meaningful relevance ranking.
-                            semantic = store.semantic(db, query_cache[key], search_model, kind, limit,
+                            semantic = store.semantic(db, cached, search_model, kind, limit,
                                                       cache=vector_cache, cancelled=cancelled)
                             semantic_complete, error = True, ''
                         finally:
@@ -554,6 +564,8 @@ def worker(db_path, commands, events):
                     if not cancelled():
                         error = str(exc)
                         log.exception('Semantic search failed')
+                if not quick_first and not semantic:
+                    quick_rows, quick_complete = run_quick(partial=False)
             if not cancelled():
                 full_has_results = bool(semantic)
                 if quick_complete:
@@ -565,17 +577,19 @@ def worker(db_path, commands, events):
                 semantic_complete = semantic_complete or quick_complete
                 if semantic_complete:
                     inventory.expand(req['id'], [row['file_id'] for row in semantic[:8]])
-                events.put({'type': 'results', 'id': req['id'],
-                            'rows': store.fuse(names, lexical, semantic, query=query),
-                            'semantic_rows': semantic, 'channels': req.get('channels', False),
-                            'semantic': semantic_complete and not error, 'error': error,
-                            'semantic_stage': stage, 'semantic_coverage': quick.coverage if quick else {},
-                            'full_checked': True,
-                            'semantic_pending': bool(model_path or quick_path) and not semantic_complete and not error})
+                publish(semantic, semantic=semantic_complete and not error, error=error,
+                        semantic_stage=stage, full_checked=True,
+                        semantic_pending=bool(model_path or quick_path) and not semantic_complete and not error)
+                if newly_encoded is not None:
+                    # A cache write can contend with the indexer. The current
+                    # request already has its vector and can be delivered first.
+                    try:
+                        query_vectors.put(db, search_model, semantic_query, newly_encoded)
+                    except Exception:
+                        log.warning('Could not persist query vector', exc_info=True)
         while paused and wait:
             status('索引已暂停')
-            time.sleep(.05)
-            checkpoint(wait=False)
+            checkpoint(wait=False, timeout=.05)
 
     try:
         while True:
@@ -744,7 +758,7 @@ def worker(db_path, commands, events):
                 storage.compact(db)
             if not work:
                 status(vector_blocked or inventory.content if not inventory.scanning else inventory.discovery)
-                time.sleep(.05)
+                checkpoint(timeout=.05)
     except SystemExit:
         pass
     except Exception as exc:

@@ -91,7 +91,7 @@ class ThumbnailProvider(QQuickImageProvider):
                     image = pdf_image(self.pdf_renderer, path, 1, (176, 132))
                 else:
                     location = {'start': 1.0} if media.kind(path) == 'video' else {}
-                    image = qimage(media.preview_image(path, location, (176, 132)))
+                    image = qimage(media.preview_image(path, location, (176, 132), display_thumbnail=True))
                 with self.lock:
                     self.images[image_id] = image
                     self.images.move_to_end(image_id)
@@ -146,6 +146,9 @@ class PreviewService(QObject):
         self._resize.setSingleShot(True)
         self._resize.setInterval(100)
         self._resize.timeout.connect(self._request)
+        self._dispatch = QTimer(self)
+        self._dispatch.setSingleShot(True)
+        self._dispatch.timeout.connect(self._submit_render)
 
     source = Property(str, lambda s: s._source, notify=changed)
     caption = Property(str, lambda s: s._caption, notify=changed)
@@ -165,13 +168,19 @@ class PreviewService(QObject):
 
     @Slot('QVariantMap')
     def setRow(self, row):
+        if self._closed:
+            return
         row = dict(row or {})
         # Keep a user-selected time while only ranking/evidence is refreshed.
         same = all(row.get(key) == self._row.get(key) for key in ('file_id', 'path', 'size', 'mtime'))
         if row == self._row and self._source:
             return
         self._row = row
+        cleared = False
         if not same:
+            cleared = bool(self._source or self._text or self._error or self._caption
+                           or self._width or self._height or self._duration or self._position
+                           or self._frames or self._frame_start or self._frame_end)
             self._source = self._text = self._error = self._caption = ''
             self._width = self._height = 0
             self._duration = self._position = 0.
@@ -179,28 +188,31 @@ class PreviewService(QObject):
             self._frames, self._frame_identity = [], None
             self._media_identity = None
             self._frame_start = self._frame_end = 0.
-        self._request()
+        self._request(visible_changed=cleared)
 
     @Slot(int, int)
     def setBounds(self, width, height):
         bounds = (max(160, min(2400, width)), max(100, min(2000, height)))
         if bounds != self._bounds:
             self._bounds = bounds
-            if self._row:
+            if self._raster_preview() and not self._dispatch.isActive():
                 self._resize.start()
+
+    def _raster_preview(self):
+        return (self._row.get('kind') in ('image', 'video') or
+                Path(self._row.get('path', '')).suffix.lower() == '.pdf')
 
     @Slot(bool)
     def setFitWidth(self, value):
         if value != self._fit:
             self._fit = value
-            self.changed.emit()
-            self._request()
+            self._request(visible_changed=True)
 
     def setScale(self, value):
         value = max(1., min(2., float(value)))
         if value != self._scale:
             self._scale = value
-            if self._row:
+            if self._raster_preview() and not self._dispatch.isActive():
                 self._resize.start()
 
     @Slot(float)
@@ -268,21 +280,33 @@ class PreviewService(QObject):
     def open(self):
         self.openRequested.emit()
 
-    def _request(self):
+    def _request(self, *, visible_changed=False):
+        # Retire the old token now so even a completion already queued in Qt
+        # cannot appear under the next file's heading.
         self._resize.stop()
         self._token += 1
         self._cancel.set()
-        self._cancel = cancel = threading.Event()
         for job in self._jobs:
             job.cancel()
         self._jobs.clear()
-        if self._closed or not self._row:
-            self._loading = False
+        loading = bool(self._row) and not self._closed
+        visible_changed = visible_changed or loading != self._loading or bool(self._error)
+        self._loading, self._error = loading, ''
+        if not loading:
+            self._dispatch.stop()
+        elif not self._dispatch.isActive():
+            # Several selections can arrive in a single event turn. Render
+            # only the row the user can actually see at the end of that turn.
+            self._dispatch.start(0)
+        if visible_changed:
             self.changed.emit()
+
+    @Slot()
+    def _submit_render(self):
+        if self._closed or not self._row:
             return
         token, row = self._token, dict(self._row)
-        self._loading, self._error = True, ''
-        self.changed.emit()
+        self._cancel = cancel = threading.Event()
         bounds = tuple(min(3200, round(size * self._scale)) for size in self._bounds)
         if Path(row['path']).suffix.lower() == '.pdf' and self._fit:
             bounds = (bounds[0], 4000)
@@ -334,13 +358,15 @@ class PreviewService(QObject):
             result['text'] = '音频内容 · 从命中位置播放'
         if path.suffix.lower() == '.pdf':
             result['image'] = pdf_image(self.pdf_renderer, path, loc.get('page', 1), bounds)
-        elif row.get('kind') in ('image', 'video'):
+        elif row.get('kind') == 'image':
+            result['image'] = qimage(media.preview_image(path, loc, bounds, display_thumbnail=True))
+        elif row.get('kind') == 'video':
             try:
                 result['image'] = qimage(media.preview_image(path, loc, bounds))
             except Exception:
                 # A container can end after the final presentation timestamp.
                 # Seek back near EOF instead of showing a failed/old preview.
-                if row.get('kind') != 'video' or not 0 < loc.get('duration', 0) - loc.get('start', 0) <= 2:
+                if not 0 < loc.get('duration', 0) - loc.get('start', 0) <= 2:
                     raise
                 for offset in (.5, 2., 10.):
                     second = max(0., loc['duration'] - offset)
@@ -364,7 +390,8 @@ class PreviewService(QObject):
                 result['text'] = '此文件没有可显示的正文。'
         elif not text:
             result['text'] = '使用默认应用打开此文件。'
-        if path.stat().st_mtime_ns != version[1] or path.stat().st_size != version[0]:
+        current = path.stat()
+        if (current.st_size, current.st_mtime_ns) != version:
             raise ValueError('Source changed while rendering')
         return result
 
@@ -446,6 +473,7 @@ class PreviewService(QObject):
 
     def close(self):
         self._closed = True
+        self._dispatch.stop()
         self._resize.stop()
         self._cancel.set()
         self._cancel_frames()

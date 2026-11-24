@@ -19,8 +19,10 @@ def location_label(row):
 
 def match_excerpt(row, query='', limit=120):
     """A plain-text window around the literal clue, or the returned content unit."""
+    if row.get('quick_basis') == 'name':
+        return ''
     text = ' '.join(str(row.get('text') or '').split())
-    if not text or row.get('quick_basis') == 'name':
+    if not text:
         return ''
     from .query_evidence import clean
     phrase = clean(query)
@@ -91,11 +93,26 @@ class ResultModel(QAbstractListModel):
         key = name.decode()
         if key == 'thumbnailSource' and row['file_id'] in self._thumbnails:
             return self._thumbnails[row['file_id']]
-        return self._views[row['file_id']].get(key)
+        return self._view(row).get(key)
+
+    def _view(self, row):
+        fid = row['file_id']
+        view = self._views.get(fid)
+        if view is None:
+            view = self.presentation(row, self._query)
+            self._views[fid] = view
+        return view
 
     @Slot(int, result='QVariantMap')
     def get(self, index):
-        return dict(self._views[self.rows[index]['file_id']]) if 0 <= index < len(self.rows) else {}
+        return dict(self._view(self.rows[index])) if 0 <= index < len(self.rows) else {}
+
+    def selected_presentation(self, row, query):
+        view = self._views.get(row['file_id'])
+        if view is None or query != self._query:
+            return self.presentation(row, query)
+        # A preview may resolve an anchor after the search model was published.
+        return dict(view, locationLabel=location_label(row))
 
     @Slot(int, result=int)
     def indexOf(self, file_id):
@@ -107,6 +124,9 @@ class ResultModel(QAbstractListModel):
         if index >= 0:
             role = next(key for key, value in self._roles.items() if value == b'thumbnailSource')
             self.dataChanged.emit(self.index(index), self.index(index), [role])
+
+    def matches(self, rows, query):
+        return self._query == query and self.rows == rows
 
     def replace(self, rows, query=''):
         """Batch adjacent edits while preserving Qt's persistent file indexes.
@@ -137,7 +157,20 @@ class ResultModel(QAbstractListModel):
             del self.rows[first:last+1]
             self.endRemoveRows()
 
-        present = {row['file_id'] for row in self.rows}
+        retained = {row['file_id']: row for row in self.rows}
+        order = [row['file_id'] for row in rows if row['file_id'] in retained]
+        if order != list(retained):
+            # Remap the whole permutation at once. Views can create persistent
+            # indexes in layoutAboutToBeChanged, so read them after the signal.
+            self.layoutAboutToBeChanged.emit()
+            old_indexes = self.persistentIndexList()
+            positions = {fid: i for i, fid in enumerate(order)}
+            destinations = [positions[self.rows[index.row()]['file_id']] for index in old_indexes]
+            self.rows = [retained[fid] for fid in order]
+            self.changePersistentIndexList(old_indexes, [self.index(i) for i in destinations])
+            self.layoutChanged.emit()
+
+        present = set(retained)
         target, changed = 0, []
         while target < len(rows):
             row = rows[target]
@@ -146,26 +179,18 @@ class ResultModel(QAbstractListModel):
                 while end < len(rows) and rows[end]['file_id'] not in present:
                     end += 1
                 added = [dict(item) for item in rows[target:end]]
-                for item in added:
-                    self._views[item['file_id']] = self.presentation(item, query)
                 self.beginInsertRows(QModelIndex(), target, end-1)
                 self.rows[target:target] = added
                 present.update(item['file_id'] for item in added)
                 self.endInsertRows()
                 target = end
                 continue
-            if self.rows[target]['file_id'] != row['file_id']:
-                current = next(i for i in range(target+1, len(self.rows))
-                               if self.rows[i]['file_id'] == row['file_id'])
-                self.beginMoveRows(QModelIndex(), current, current, QModelIndex(), target)
-                self.rows.insert(target, self.rows.pop(current))
-                self.endMoveRows()
             if self.rows[target] != row or query_changed:
                 old = self.rows[target]
                 if (old.get('path'), old.get('size'), old.get('mtime')) != (row.get('path'), row.get('size'), row.get('mtime')):
                     self._thumbnails.pop(row['file_id'], None)
                 self.rows[target] = dict(row)
-                self._views[row['file_id']] = self.presentation(row, query)
+                self._views.pop(row['file_id'], None)
                 changed.append(target)
             target += 1
         if changed:

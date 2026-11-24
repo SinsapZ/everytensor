@@ -91,6 +91,7 @@ def scan(db, root, checkpoint=lambda: None, *, subtree=None, progress=lambda _: 
             db.execute("UPDATE files SET status='pending' WHERE status<>'metadata'")
         store.set_setting(db, 'extractor_version', SCHEMA)
     exclusions = catalog.excluded_paths(db)
+    excluded_entries = {os.path.normcase(path) for path in exclusions}
     home = Path.home()
     priority = store.setting(db, 'roots', []) + [str(home/p) for p in
         ('Desktop', 'Documents', 'Downloads', 'Pictures', 'Videos', 'Music')] + [str(home)]
@@ -139,7 +140,9 @@ def scan(db, root, checkpoint=lambda: None, *, subtree=None, progress=lambda _: 
                             if not getattr(stat, 'st_file_attributes', 0) & 0x400:
                                 yield entry.path
                             continue
-                        if any(catalog.within(entry.path, p) for p in exclusions):
+                        # walk() has already checked every ancestor of this file.
+                        # Only an exclusion naming the file itself can still match.
+                        if os.path.normcase(entry.path) in excluded_entries:
                             continue
                         kind = media.kind(entry.path)
                         eligible = catalog.content_allowed(entry.path, kind, stat)

@@ -9,6 +9,8 @@ import os
 import stat
 from contextlib import contextmanager
 from collections import OrderedDict
+from itertools import groupby
+from operator import itemgetter
 from pathlib import Path
 from .cache import ByteCache
 from . import catalog, query_evidence
@@ -264,21 +266,28 @@ def _result_page(db, query, args, limit, offset=0, *, scope=None):
     live = _LiveFiles(db, scope)
     if live.scope[0] is None:
         return [result(row) for row in db.execute(query+' LIMIT ? OFFSET ?', (*args, limit, offset))]
+    if limit <= 0:
+        return []
+    # Grow the SQL window only when stale candidates force another pass.
+    # Retain the bounded Top-N sort and stop decoding rows as soon as it fills.
     page_size, position, skipped, found = max(64, min(512, limit+offset)), 0, 0, []
     while len(found) < limit:
-        rows = db.execute(query+' LIMIT ? OFFSET ?', (*args, page_size, position)).fetchall()
-        for row in rows:
+        count = 0
+        for row in db.execute(query+' LIMIT ? OFFSET ?', (*args, page_size, position)):
+            count += 1
             item = result(row)
-            if live.accept(item):
-                if skipped < offset:
-                    skipped += 1
-                else:
-                    found.append(item)
-                    if len(found) == limit:
-                        break
-        if len(rows) < page_size:
+            if not live.accept(item):
+                continue
+            if skipped < offset:
+                skipped += 1
+            else:
+                found.append(item)
+                if len(found) == limit:
+                    return found
+        if count < page_size:
             break
-        position += len(rows)
+        position += count
+        page_size = min(4096, page_size*2)
     return found
 
 
@@ -438,7 +447,7 @@ def _name_batches(db, query, kind='', limit=100, cancelled=lambda: False):
             yield list(fast.values())[:limit], False
     if cancelled():
         return
-    indexed = names(db, query, kind, limit, indexed_only=True)
+    indexed = _names(db, query, kind, limit, indexed_only=True, scope=scope)
     pending = bool(topic and db.execute(f'SELECT 1 FROM files WHERE name_indexed=0 AND {allowed} LIMIT 1', scope_args).fetchone())
     if not pending:
         yield indexed, True
@@ -450,7 +459,7 @@ def _name_batches(db, query, kind='', limit=100, cancelled=lambda: False):
         0 if catalog.search_key(r['name']) == topic else 1 if topic in catalog.search_key(r['name']) else 2,
         catalog.search_key(r['name']), r['file_id']))[:limit], False
     if not cancelled():
-        yield names(db, query, kind, limit), True
+        yield _names(db, query, kind, limit, scope=scope), True
 
 
 def names(db, query, kind='', limit=100, offset=0, *, indexed_only=False):
@@ -458,11 +467,12 @@ def names(db, query, kind='', limit=100, offset=0, *, indexed_only=False):
         return _names(db, query, kind, limit, offset, indexed_only=indexed_only)
 
 
-def _names(db, query, kind='', limit=100, offset=0, *, indexed_only=False):
+def _names(db, query, kind='', limit=100, offset=0, *, indexed_only=False, scope=None):
     kind = kind or query_intent(query)[0]
     topic = catalog.search_key(query_topic(query))
     terms = topic.split()
-    scope = catalog.search_scope(db)
+    if scope is None:
+        scope = catalog.search_scope(db)
     allowed, scope_args = catalog.scope_clause(scope)
     clauses, args, source = [allowed], list(scope_args), 'files'
     source_args = []
@@ -567,6 +577,13 @@ def _keywords(db, query, kind='', limit=300):
     return found
 
 
+def _normalized_matrix(rows, stored_dim, dim):
+    import numpy as np
+    from .embeddings import truncate
+    packed = np.frombuffer(b''.join(row[2] for row in rows), '<f4')
+    return truncate(packed.reshape(len(rows), stored_dim), min(stored_dim, dim))
+
+
 class VectorCache:
     """Cache numeric blocks only; fetch live metadata after ranking.
 
@@ -577,15 +594,14 @@ class VectorCache:
         self.cache = ByteCache(max_bytes, max_items=8)
         self.revision = None
 
-    def blocks(self, db, model, dim, kind):
+    def blocks(self, db, model, dim, kind, scope=None):
         import numpy as np
         revision = (db, search_revision(db))
         if revision != self.revision:
             self.cache.clear()
             self.revision = revision
-        scope = catalog.search_scope(db)
-        allowed, scope_args = catalog.scope_clause(scope, 'f.path_key')
-        ready = " AND f.status='ready'" if scope[0] is not None else ''
+        if scope is None:
+            scope = catalog.search_scope(db)
         key = (model, dim, kind, scope)
         cached = self.cache.get(key)
         if cached is not None:
@@ -593,19 +609,19 @@ class VectorCache:
             return
         # A scope/type predicate must not make SQLite start at millions of
         # filename-only rows. Only encoded vectors can enter this channel.
+        allowed, scope_args = catalog.scope_clause(scope, 'f.path_key')
+        ready = " AND f.status='ready'" if scope[0] is not None else ''
         cursor = db.execute(f"""SELECT u.id,u.file_id,v.data,v.dim FROM vectors v INDEXED BY vectors_model
             CROSS JOIN units u ON u.digest=v.digest CROSS JOIN files f ON f.id=u.file_id
             WHERE v.model=? AND (?='' OR f.kind=?) AND {allowed}{ready}""", (model, kind, kind, *scope_args))
+        cursor.row_factory = None
         saved, size, batch_size = [], 0, 256
         # Small first read for first paint, then grow to throughput-sized blocks.
         while rows := cursor.fetchmany(batch_size):
-            from itertools import groupby
-            from .embeddings import truncate
-            for stored_dim, group in groupby(rows, key=lambda r: r[3]):
+            for stored_dim, group in groupby(rows, key=itemgetter(3)):
                 group = list(group)
                 ids = np.array([(r[0], r[1]) for r in group], dtype=np.int64)
-                packed = np.frombuffer(b''.join(r[2] for r in group), dtype='<f4').reshape(len(group), stored_dim)
-                matrix = truncate(packed, min(dim, stored_dim))
+                matrix = _normalized_matrix(group, stored_dim, dim)
                 block = (ids, matrix)
                 size += ids.nbytes + matrix.nbytes
                 if saved is not None:
@@ -620,6 +636,10 @@ class VectorCache:
 
 
 def semantic(db, vector, model, kind='', limit=300, cache=None, cancelled=lambda: False, progress=None):
+    # A caller can roll back a pending write and later reuse its revision
+    # number for different data. Only publish cache entries from owned reads.
+    if db.in_transaction:
+        cache = None
     with read_snapshot(db):
         return _semantic(db, vector, model, kind, limit, cache, cancelled, progress)
 
@@ -630,8 +650,8 @@ def _semantic(db, vector, model, kind='', limit=300, cache=None, cancelled=lambd
         return []
     q = np.array(vector, dtype=np.float32, copy=True)
     q /= max(float(np.linalg.norm(q)), 1e-12)
-    blocks = (cache or VectorCache(max_bytes=0)).blocks(db, model, len(q), kind)
     best, heap, live = {}, [], _LiveFiles(db, max_entries=max(64, 2*limit))
+    blocks = (cache or VectorCache(max_bytes=0)).blocks(db, model, len(q), kind, live.scope)
     last_progress = 0.
     def snapshot(count):
         chosen = heapq.nlargest(count, best, key=best.get)
@@ -643,10 +663,8 @@ def _semantic(db, vector, model, kind='', limit=300, cache=None, cancelled=lambd
                 u.id AS unit_id,u.text,u.location FROM units u JOIN files f ON f.id=u.file_id
                 WHERE u.id IN ({marks})""", uids):
                 metadata[row['file_id']] = result(row)
-        found = [dict(metadata[fid], similarity=best[fid][0]) for fid in chosen if fid in metadata]
-        return found, metadata
-    def offer(score, uid, fid):
-        candidate = (score, uid)
+        return [dict(metadata[fid], similarity=best[fid][0]) for fid in chosen if fid in metadata]
+    def offer(candidate, fid):
         if fid in best:
             if candidate <= best[fid]:
                 return
@@ -663,70 +681,107 @@ def _semantic(db, vector, model, kind='', limit=300, cache=None, cancelled=lambd
             _, _, removed = heapq.heappop(heap)
             del best[removed]
         best[fid] = candidate
-        heapq.heappush(heap, (score, uid, fid))
+        heapq.heappush(heap, (*candidate, fid))
         if len(heap) > max(64, 2*limit):
             heap[:] = [(s, u, f) for f, (s, u) in best.items()]
             heapq.heapify(heap)
+    # Rank a bounded group of blocks before touching the filesystem. In a
+    # typical cached search this validates just the actual top files, even
+    # when a book or recording has thousands of high-scoring units.
+    def rank_group(id_parts, score_parts):
+        if not score_parts:
+            return
+        ids = id_parts[0] if len(id_parts) == 1 else np.concatenate(id_parts)
+        scores = score_parts[0] if len(score_parts) == 1 else np.concatenate(score_parts)
+        order = np.lexsort((ids[:, 0], scores))[::-1]
+        for position, index in enumerate(order):
+            if position % 256 == 0 and cancelled():
+                return
+            candidate = float(scores[index]), int(ids[index, 0])
+            if len(best) >= limit and candidate <= heap[0][:2]:
+                break
+            offer(candidate, int(ids[index, 1]))
+
+    id_parts, score_parts, pending = [], [], 0
+    short_queries = {}
     for ids, matrix in blocks:
         if cancelled():
             return []
-        short = q[:matrix.shape[1]]
-        short = short/max(float(np.linalg.norm(short)), 1e-12)
-        scores = matrix @ short
+        dim = matrix.shape[1]
+        if dim not in short_queries:
+            short = q[:dim]
+            short_queries[dim] = short/max(float(np.linalg.norm(short)), 1e-12)
+        scores = matrix @ short_queries[dim]
         # The current file Top-K threshold can only increase. Reject entire
         # low-scoring vector lanes in NumPy before creating Python objects.
         if len(best) >= limit:
             keep = scores >= heap[0][0]
             scores, ids = scores[keep], ids[keep]
-        for score, (uid, fid) in zip(scores.tolist(), ids.tolist()):
-            offer(score, uid, fid)
-        now = time.monotonic()
-        if progress is not None and best and now-last_progress >= .15 and not cancelled():
-            progress(snapshot(min(limit, 100))[0])
-            last_progress = now
-    # Exact file Top-K; accumulator memory is O(K), not O(all files).
+        if len(scores):
+            id_parts.append(ids)
+            score_parts.append(scores)
+            pending += len(scores)
+        publish = progress is not None and time.monotonic()-last_progress >= .15
+        if pending >= 16384 or publish:
+            rank_group(id_parts, score_parts)
+            id_parts, score_parts, pending = [], [], 0
+            if publish and best and not cancelled():
+                progress(snapshot(min(limit, 100)))
+                last_progress = time.monotonic()
     if cancelled():
         return []
-    found, metadata = snapshot(limit)
-    # Only selected videos need additional local peaks. All windows remain eligible.
-    videos = [r['file_id'] for r in found if r['kind'] in ('video', 'audio')]
-    found = [r for r in found if r['kind'] not in ('video', 'audio')]
-    for fid in videos:
-        candidates = []
-        cursor = db.execute("""SELECT u.id,u.location,v.data,v.dim FROM units u JOIN vectors v ON v.digest=u.digest
-            WHERE u.file_id=? AND v.model=?""", (fid, model))
-        for row in cursor:
-            from .embeddings import truncate
+    rank_group(id_parts, score_parts)
+    if cancelled():
+        return []
+    found = []
+    media_queries = {}
+    for hit in snapshot(limit):
+        if hit['kind'] in ('audio', 'video'):
+            found.extend(_temporal_peaks(db, hit, model, q, media_queries, cancelled))
             if cancelled():
                 return []
-            dim = min(len(q), row['dim'])
-            score = float(truncate(np.frombuffer(row['data'], dtype='<f4'), dim) @ truncate(q, dim))
-            if score >= best[fid][0]-.040001:
-                candidates.append((score, row['id'], row['location']))
-        for score, uid, location in sorted(candidates, reverse=True):
-            d = dict(metadata[fid], unit_id=uid, location=json.loads(location), similarity=score)
-            found.append(d)
+        else:
+            found.append(hit)
     found.sort(key=lambda r: (r['similarity'], r['unit_id']), reverse=True)
-    # Avoid turning every window of a short video into one full-length "hit".
-    # Keep at most three strong, distinct temporal peaks per file.
-    filtered, video_peaks = [], {}
-    for hit in found:
-        if hit['kind'] not in ('video', 'audio'):
-            filtered.append(hit)
-            continue
-        peaks = video_peaks.setdefault(hit['file_id'], [])
-        loc = hit['location']
-        if len(peaks) >= 3 or (peaks and hit['similarity'] < peaks[0]['similarity']-.04):
-            continue
-        def overlap(other):
-            area = max(0, min(loc['end'], other['end'])-max(loc['start'], other['start']))
-            union = max(loc['end'], other['end'])-min(loc['start'], other['start'])
-            return area/max(union, 1e-6)
-        if any(overlap(p['location']) > .3 for p in peaks):
-            continue
-        peaks.append(hit)
-        filtered.append(hit)
-    return filtered
+    return found
+
+
+def _temporal_peaks(db, hit, model, q, queries, cancelled):
+    import numpy as np
+    from .embeddings import truncate
+    candidates = []
+    cursor = db.execute("""SELECT u.id,u.location,v.data,v.dim FROM units u JOIN vectors v ON v.digest=u.digest
+        WHERE u.file_id=? AND v.model=?""", (hit['file_id'], model))
+    cursor.row_factory = None
+    while rows := cursor.fetchmany(256):
+        if cancelled():
+            return []
+        for stored_dim, group in groupby(rows, key=itemgetter(3)):
+            group = list(group)
+            dim = min(len(q), stored_dim)
+            if dim not in queries:
+                queries[dim] = truncate(q, dim)
+            matrix = _normalized_matrix(group, stored_dim, dim)
+            # Keep the original per-window float32 dot product at score ties.
+            scores = (matrix[:, None, :] @ queries[dim])[:, 0]
+            for index in np.flatnonzero(scores.astype(np.float64) >= hit['similarity']-.040001):
+                uid, location, _, _ = group[index]
+                candidates.append((float(scores[index]), uid, location))
+    # Suppress overlapping windows per recording before merging files.
+    def overlaps(a, b):
+        area = max(0, min(a['end'], b['end'])-max(a['start'], b['start']))
+        union = max(a['end'], b['end'])-min(a['start'], b['start'])
+        return area/max(union, 1e-6) > .3
+    peaks = []
+    for score, uid, location in sorted(candidates, reverse=True):
+        if len(peaks) == 3 or (peaks and score < peaks[0]['similarity']-.04):
+            break
+        loc = json.loads(location)
+        if not any(overlaps(loc, peak['location']) for peak in peaks):
+            text = hit['text'] if uid == hit['unit_id'] else db.execute(
+                'SELECT text FROM units WHERE id=?', (uid,)).fetchone()[0]
+            peaks.append(dict(hit, unit_id=uid, text=text, location=loc, similarity=score))
+    return peaks
 
 
 def prefers_pdf(query):

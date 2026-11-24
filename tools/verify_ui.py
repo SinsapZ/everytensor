@@ -80,6 +80,8 @@ class DesktopInteractionTests(unittest.TestCase):
         self.client._visible = 100
         self.window.setProperty('feedbackMessage', '')
         self.client._publish(self.rows)
+        # An unchanged model can keep the viewport left by an earlier navigation test.
+        self.js('results.positionViewAtBeginning()')
         self.js('window.focusSearch()')
         QTest.qWait(200)
 
@@ -272,9 +274,13 @@ class DesktopInteractionTests(unittest.TestCase):
         self.capture('pdf-compact')
 
     def test_11_empty_results_recovery(self):
+        listing = self.item('resultsList')
+        initial_width = listing.width()
         self.client._kind = 'image'
         self.client._publish([])
         QTest.qWait(50)
+        self.assertFalse(self.item('previewPane').isVisible())
+        self.assertEqual(listing.width(), initial_width)
         self.assertTrue(self.item('clearFilterButton').property('visible'))
         self.capture('empty-results')
         self.click('clearFilterButton')
@@ -565,6 +571,29 @@ class DesktopInteractionTests(unittest.TestCase):
             self.assertLessEqual(point.x() + item.width(), pane.width())
             self.assertLessEqual(point.y() + item.height(), pane.height())
         self.capture('video-results-compact')
+
+    def test_25_result_tooltip_follows_hover_and_closes_on_selection(self):
+        row = self.item('resultRow_2')
+        point = row.mapToScene(QPointF(row.width() / 2, row.height() / 2)).toPoint()
+        QTest.mouseMove(self.window, point)
+        self.wait_until(lambda: row.findChild(QObject, 'resultHint_2') is not None)
+        hint = row.findChild(QObject, 'resultHint_2')
+        self.wait_until(lambda: hint.property('opened'))
+        self.assertIn(self.rows[1]['path'], hint.property('text'))
+        self.assertIsNone(self.item('resultRow_3').findChild(QObject, 'resultHint_3'))
+        self.click_item(row)
+        self.wait_until(lambda: row.findChild(QObject, 'resultHint_2') is None)
+
+    def test_26_settings_discards_cancelled_edits_before_reopening(self):
+        self.js('window.openSettings()')
+        self.wait_until(lambda: self.item('settingsDialog').property('opened'))
+        budget = self.item('budgetField')
+        initial = budget.property('text')
+        budget.setProperty('text', '321')
+        self.key(Qt.Key.Key_Escape)
+        self.wait_until(lambda: not self.item('settingsDialog').property('visible'))
+        self.js('window.openSettings()')
+        self.assertEqual(budget.property('text'), initial)
 
     def test_90_capture(self):
         self.capture('results-wide')

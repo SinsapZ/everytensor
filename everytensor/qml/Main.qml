@@ -15,6 +15,8 @@ ApplicationWindow {
     font.pixelSize: 14
     property bool browsing: client.query.trim().length > 0 || client.kind.length > 0
     property real preferredListWidth: 360
+    readonly property int resultRowHeight: 76
+    readonly property int resultSpacing: 3
     property string toastMessage: ""
     property string dismissedWarning: ""
     property Item settingsReturnFocus: null
@@ -25,7 +27,7 @@ ApplicationWindow {
     property real anchorOffset: 0
     property int restoreRevision: 0
     readonly property bool singleVideo: client.kind === "video" && results.count === 1 && (!client.pending || client.refreshing) && !client.searchError
-    readonly property bool hasSelected: client.selected && !!client.selected.name
+    readonly property bool hasSelected: client.selectedId >= 0
     function focusSearch() { search.forceActiveFocus(); search.selectAll(); }
     function openModelSetup() { modelSetupDialog.open(); }
     Component.onCompleted: { if(modelSetup.shouldOffer) Qt.callLater(window.openModelSetup); }
@@ -35,7 +37,7 @@ ApplicationWindow {
         settingsReturnFocus = window.activeFocusItem;
         settingsDialog.open();
     }
-    function openCurrent() { if(hasSelected && (client.selected.kind === "video" || client.selected.kind === "audio")) preview.open(); else client.openSelected(); }
+    function openCurrent() { if(previewPane.isMedia) preview.open(); else client.openSelected(); }
     function showResultMenu() {
         if(!hasSelected) return;
         var item = results.currentItem;
@@ -92,7 +94,7 @@ ApplicationWindow {
         spacing: 0
         Item {
             Layout.fillWidth: true
-            Layout.preferredHeight: 94
+            Layout.preferredHeight: 78
             RowLayout {
                 anchors.fill: parent; anchors.leftMargin: 26; anchors.rightMargin: 26
                 spacing: 24
@@ -114,7 +116,7 @@ ApplicationWindow {
                 Rectangle {
                     id: searchSurface
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 54
+                    Layout.preferredHeight: 48
                     radius: 11
                     color: Theme.paper
                     border.color: search.activeFocus ? "#be887b" : Theme.line
@@ -194,10 +196,13 @@ ApplicationWindow {
                 anchors.right: parent.right; anchors.rightMargin: 30
                 anchors.top: parent.top; anchors.topMargin: 9
                 spacing: 8
+                Item { Layout.fillWidth: true }
                 Rectangle { visible: client.pending; Layout.preferredWidth: 5; Layout.preferredHeight: 5; radius: 2.5; color: Theme.accent }
                 Text {
                     objectName: "resultStatusText"
-                    Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: parent.width - (client.pending ? 21 : 8)
+                    horizontalAlignment: Text.AlignRight
                     text: client.resultLabel; textFormat: Text.PlainText; elide: Text.ElideRight
                     color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12
                     HoverHandler { id: statusHover }
@@ -210,7 +215,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.leftMargin: 26; Layout.rightMargin: 26
             Layout.bottomMargin: 12
-            Layout.preferredHeight: noticeText.implicitHeight + 20
+            Layout.preferredHeight: Math.max(34, noticeText.implicitHeight) + 20
             visible: window.currentNotice.length > 0
             radius: 8; color: Theme.selection
             RowLayout {
@@ -245,12 +250,12 @@ ApplicationWindow {
             Layout.fillHeight: true
             visible: !window.browsing
             Column {
-                width: Math.min(640, parent.width - 100)
+                width: Math.min(530, parent.width - 100)
                 anchors.horizontalCenter: parent.horizontalCenter
                 y: Math.max(50, (parent.height - height) * .36)
                 spacing: 0
-                Text { anchors.horizontalCenter: parent.horizontalCenter; bottomPadding: 12; text: "从记得的一点开始"; color: Theme.ink; font.family: Theme.family; font.pixelSize: 24; font.weight: Font.Medium }
-                Item { width: 1; height: 20 }
+                Text { leftPadding: 4; text: "搜索示例"; color: Theme.ink; font.family: Theme.family; font.pixelSize: 19; font.weight: Font.DemiBold }
+                Item { width: 1; height: 14 }
                 Rectangle {
                     width: parent.width; height: examples.implicitHeight + 8; radius: 12
                     color: "#80ffffff"; border.color: Theme.line
@@ -288,158 +293,170 @@ ApplicationWindow {
             }
         }
 
-        RowLayout {
-            id: workspace
+        Item {
             Layout.fillWidth: true; Layout.fillHeight: true
             Layout.leftMargin: 26; Layout.rightMargin: 26
             Layout.bottomMargin: 14
             visible: window.browsing
-            spacing: 0
-            Rectangle {
-                id: resultsPanel
-                visible: !window.singleVideo
-                Layout.preferredWidth: Math.min(window.preferredListWidth, (window.width - 52) * (window.width < 1040 ? .35 : .44))
-                Layout.minimumWidth: 270
-                Layout.fillHeight: true
-                color: "transparent"
-                ListView {
-                    id: results
-                    objectName: "resultsList"
-                    anchors.fill: parent
-                    model: client.results
-                    clip: true
-                    spacing: 4
-                    currentIndex: -1
-                    reuseItems: true
-                    cacheBuffer: 200
-                    boundsBehavior: Flickable.StopAtBounds
-                    onMovementStarted: client.markInteraction()
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                    Keys.onDownPressed: window.moveSelection(1)
-                    Keys.onUpPressed: { if(currentIndex <= 0) search.forceActiveFocus(); else window.moveSelection(-1); }
-                    Keys.onReturnPressed: function(event) { if(event.modifiers & Qt.ShiftModifier) client.revealSelected(); else window.openCurrent(); }
-                    Keys.onEnterPressed: function(event) { if(event.modifiers & Qt.ShiftModifier) client.revealSelected(); else window.openCurrent(); }
-                    Keys.onPressed: function(event) {
-                        if(event.key === Qt.Key_Home) { window.moveSelection(-results.count); event.accepted = true; }
-                        else if(event.key === Qt.Key_End) { window.moveSelection(results.count); event.accepted = true; }
-                        else if(event.key === Qt.Key_PageDown) { window.moveSelection(Math.max(1, Math.floor(results.height / 96))); event.accepted = true; }
-                        else if(event.key === Qt.Key_PageUp) { window.moveSelection(-Math.max(1, Math.floor(results.height / 96))); event.accepted = true; }
-                        else if(event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) { client.copyLocation(); event.accepted = true; }
-                        else if(event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier))) { window.showResultMenu(); event.accepted = true; }
-                    }
-                    delegate: Rectangle {
-                        id: resultRow
-                        objectName: "resultRow_" + fileId
-                        required property int index
-                        required property int fileId
-                        required property string name
-                        required property string parentPath
-                        required property string fullPath
-                        required property string kind
-                        required property string suffix
-                        required property string locationLabel
-                        required property string thumbnailSource
-                        required property string matchLabel
-                        required property string excerpt
-                        readonly property bool selected: client.selectedId === fileId
-                        property bool tooltipSuppressed: false
-                        Accessible.role: Accessible.ListItem
-                        Accessible.name: name
-                        Accessible.description: fullPath + (locationLabel ? " · " + locationLabel : "") + (matchLabel ? " · " + matchLabel : "") + (excerpt ? " · " + excerpt : "")
-                        Accessible.selected: selected
-                        Accessible.focusable: true
-                        Accessible.focused: results.activeFocus && results.currentIndex === index
-                        Accessible.onPressAction: { results.currentIndex = index; results.forceActiveFocus(); client.selectFile(fileId, true); }
-                        width: results.width - 8
-                        height: 92
-                        radius: 9
-                        color: selected ? Theme.selection : pointer.containsMouse ? "#b0ffffff" : "transparent"
-                        border.color: selected && results.activeFocus ? Theme.selectionLine : "transparent"
-                        onSelectedChanged: if(selected) results.currentIndex = index
-                        Behavior on color { ColorAnimation { duration: Theme.fast } }
-                        Rectangle { anchors.left: parent.left; anchors.leftMargin: 1; anchors.verticalCenter: parent.verticalCenter; width: 3; height: 29; radius: 1.5; color: Theme.accent; visible: resultRow.selected }
-                        RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 15; anchors.rightMargin: 14
-                            spacing: 12
+            RowLayout {
+                id: workspace
+                anchors.fill: parent
+                visible: results.count > 0
+                spacing: 0
+                Rectangle {
+                    id: resultsPanel
+                    visible: !window.singleVideo
+                    Layout.preferredWidth: Math.min(window.preferredListWidth, (window.width - 52) * (window.width < 1040 ? .35 : .44))
+                    Layout.minimumWidth: 270
+                    Layout.fillHeight: true
+                    color: "transparent"
+                    ListView {
+                        id: results
+                        objectName: "resultsList"
+                        anchors.fill: parent
+                        model: client.results
+                        clip: true
+                        spacing: window.resultSpacing
+                        currentIndex: -1
+                        reuseItems: true
+                        cacheBuffer: 200
+                        boundsBehavior: Flickable.StopAtBounds
+                        onMovementStarted: client.markInteraction()
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                        Keys.onDownPressed: window.moveSelection(1)
+                        Keys.onUpPressed: { if(currentIndex <= 0) search.forceActiveFocus(); else window.moveSelection(-1); }
+                        Keys.onReturnPressed: function(event) { if(event.modifiers & Qt.ShiftModifier) client.revealSelected(); else window.openCurrent(); }
+                        Keys.onEnterPressed: function(event) { if(event.modifiers & Qt.ShiftModifier) client.revealSelected(); else window.openCurrent(); }
+                        Keys.onPressed: function(event) {
+                            if(event.key === Qt.Key_Home) { window.moveSelection(-results.count); event.accepted = true; }
+                            else if(event.key === Qt.Key_End) { window.moveSelection(results.count); event.accepted = true; }
+                            else if(event.key === Qt.Key_PageDown) { window.moveSelection(Math.max(1, Math.floor(results.height / (window.resultRowHeight + results.spacing)))); event.accepted = true; }
+                            else if(event.key === Qt.Key_PageUp) { window.moveSelection(-Math.max(1, Math.floor(results.height / (window.resultRowHeight + results.spacing)))); event.accepted = true; }
+                            else if(event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) { client.copyLocation(); event.accepted = true; }
+                            else if(event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier))) { window.showResultMenu(); event.accepted = true; }
+                        }
+                        delegate: Rectangle {
+                            id: resultRow
+                            objectName: "resultRow_" + fileId
+                            required property int index
+                            required property int fileId
+                            required property string name
+                            required property string parentPath
+                            required property string fullPath
+                            required property string kind
+                            required property string suffix
+                            required property string locationLabel
+                            required property string thumbnailSource
+                            required property string matchLabel
+                            required property string excerpt
+                            readonly property bool selected: client.selectedId === fileId
+                            property bool tooltipSuppressed: false
+                            property bool pooled: false
+                            ListView.onPooled: pooled = true
+                            ListView.onReused: { pooled = false; tooltipSuppressed = false; }
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: name
+                            Accessible.description: fullPath + (locationLabel ? " · " + locationLabel : "") + (matchLabel ? " · " + matchLabel : "") + (excerpt ? " · " + excerpt : "")
+                            Accessible.selected: selected
+                            Accessible.focusable: true
+                            Accessible.focused: results.activeFocus && results.currentIndex === index
+                            Accessible.onPressAction: { results.currentIndex = index; results.forceActiveFocus(); client.selectFile(fileId, true); }
+                            width: results.width - 8
+                            height: window.resultRowHeight
+                            radius: 9
+                            color: selected ? Theme.selection : pointer.containsMouse ? "#b0ffffff" : "transparent"
+                            border.color: selected && results.activeFocus ? Theme.selectionLine : "transparent"
+                            onSelectedChanged: if(selected) results.currentIndex = index
+                            Rectangle { anchors.left: parent.left; anchors.leftMargin: 1; anchors.verticalCenter: parent.verticalCenter; width: 3; height: 29; radius: 1.5; color: Theme.accent; visible: resultRow.selected }
                             Rectangle {
-                                Layout.preferredWidth: 38; Layout.preferredHeight: 42
+                                id: fileBadge
+                                anchors.left: parent.left; anchors.leftMargin: 15
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 38; height: 42
                                 radius: 7
                                 color: resultRow.selected ? "#caffffff" : "#a0ffffff"
                                 Icon { anchors.centerIn: parent; width: 22; height: 22; visible: !thumbnail.visible; name: resultRow.kind === "image" ? "image" : resultRow.kind === "video" ? "video" : resultRow.kind === "audio" ? "audio" : resultRow.kind === "code" ? "code" : "file"; color: resultRow.selected ? Theme.accent : Theme.secondary }
                                 Image { id: thumbnail; anchors.fill: parent; anchors.margins: 2; source: resultRow.thumbnailSource; visible: source.toString().length > 0 && status === Image.Ready; fillMode: Image.PreserveAspectCrop; asynchronous: true; smooth: true; clip: true }
                             }
-                            ColumnLayout {
-                                Layout.fillWidth: true; spacing: 5
-                                Text { text: resultRow.name; textFormat: Text.PlainText; color: Theme.ink; font.family: Theme.family; font.pixelSize: 14; font.weight: resultRow.selected ? Font.DemiBold : Font.Normal; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                RowLayout {
-                                    Layout.fillWidth: true; spacing: 8
-                                    Text { text: resultRow.parentPath; textFormat: Text.PlainText; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                    Text { visible: resultRow.locationLabel.length > 0; text: resultRow.locationLabel; textFormat: Text.PlainText; color: resultRow.selected ? Theme.accent : Theme.quiet; font.family: Theme.family; font.pixelSize: 11; elide: Text.ElideRight; Layout.maximumWidth: 100 }
+                            Column {
+                                anchors.left: fileBadge.right; anchors.leftMargin: 12
+                                anchors.right: parent.right; anchors.rightMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 2
+                                Text { width: parent.width; text: resultRow.name; textFormat: Text.PlainText; color: Theme.ink; font.family: Theme.family; font.pixelSize: 14; font.weight: resultRow.selected ? Font.DemiBold : Font.Normal; elide: Text.ElideMiddle }
+                                Item {
+                                    width: parent.width; height: pathText.implicitHeight
+                                    Text { id: pathText; anchors.left: parent.left; anchors.right: locationText.visible ? locationText.left : parent.right; anchors.rightMargin: locationText.visible ? 8 : 0; text: resultRow.parentPath; textFormat: Text.PlainText; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 11; elide: Text.ElideMiddle }
+                                    Text { id: locationText; anchors.right: parent.right; width: Math.min(100, implicitWidth); visible: resultRow.locationLabel.length > 0; text: resultRow.locationLabel; textFormat: Text.PlainText; color: resultRow.selected ? Theme.accent : Theme.quiet; font.family: Theme.family; font.pixelSize: 11; elide: Text.ElideRight }
                                 }
                                 Text {
                                     objectName: "resultExcerpt_" + resultRow.fileId
-                                    Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight
+                                    width: parent.width; textFormat: Text.PlainText; elide: Text.ElideRight
                                     text: resultRow.excerpt || resultRow.matchLabel || resultRow.suffix
-                                    color: Theme.secondary; font.family: Theme.family; font.pixelSize: 11
+                                    color: Theme.secondary; font.family: Theme.family; font.pixelSize: 12
+                                }
+                            }
+                            MouseArea {
+                                id: pointer
+                                anchors.fill: parent; hoverEnabled: true
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                cursorShape: Qt.PointingHandCursor
+                                onPressed: resultRow.tooltipSuppressed = true
+                                onExited: resultRow.tooltipSuppressed = false
+                                onClicked: function(mouse) {
+                                    results.currentIndex = resultRow.index; results.forceActiveFocus(); client.selectFile(resultRow.fileId, true);
+                                    if(mouse.button === Qt.RightButton) resultMenu.popup(resultRow, mouse.x, mouse.y);
+                                }
+                                onDoubleClicked: function(mouse) { if(mouse.button === Qt.LeftButton) { client.selectFile(resultRow.fileId, true); window.openCurrent(); } }
+                            }
+                            Loader {
+                                active: pointer.containsMouse && !results.moving && !resultRow.pooled && !resultRow.tooltipSuppressed && !window.tooltipsBlocked
+                                sourceComponent: Hint {
+                                    id: resultHint
+                                    objectName: "resultHint_" + resultRow.fileId
+                                    parent: resultRow
+                                    visible: true
+                                    delay: 900
+                                    text: resultRow.fullPath + (resultRow.matchLabel ? "\n" + resultRow.matchLabel : "") + (resultRow.excerpt ? "\n" + resultRow.excerpt : "")
+                                    contentItem: Text { text: resultHint.text; textFormat: Text.PlainText; font: resultHint.font; color: "white"; wrapMode: Text.Wrap }
                                 }
                             }
                         }
-                        MouseArea {
-                            id: pointer
-                            anchors.fill: parent; hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
-                            cursorShape: Qt.PointingHandCursor
-                            onPressed: resultRow.tooltipSuppressed = true
-                            onExited: resultRow.tooltipSuppressed = false
-                            onClicked: function(mouse) {
-                                results.currentIndex = resultRow.index; results.forceActiveFocus(); client.selectFile(resultRow.fileId, true);
-                                if(mouse.button === Qt.RightButton) resultMenu.popup(resultRow, mouse.x, mouse.y);
-                            }
-                            onDoubleClicked: function(mouse) { if(mouse.button === Qt.LeftButton) { client.selectFile(resultRow.fileId, true); window.openCurrent(); } }
-                        }
-                        Hint {
-                            id: resultHint
-                            parent: resultRow
-                            visible: pointer.containsMouse && !resultRow.tooltipSuppressed && !window.tooltipsBlocked
-                            delay: 900
-                            text: resultRow.fullPath + (resultRow.matchLabel ? "\n" + resultRow.matchLabel : "") + (resultRow.excerpt ? "\n" + resultRow.excerpt : "")
-                            contentItem: Text { text: resultHint.text; textFormat: Text.PlainText; font: resultHint.font; color: "white"; wrapMode: Text.Wrap }
+                        footer: Item {
+                            width: results.width; height: client.canLoadMore ? 56 : 8
+                            DeskButton { anchors.centerIn: parent; visible: client.canLoadMore; text: "显示更多结果"; onClicked: client.loadMore() }
                         }
                     }
-                    footer: Item {
-                        width: results.width; height: client.canLoadMore ? 56 : 8
-                        DeskButton { anchors.centerIn: parent; visible: client.canLoadMore; text: "显示更多结果"; onClicked: client.loadMore() }
+                }
+                Item {
+                    visible: !window.singleVideo
+                    Layout.preferredWidth: 20; Layout.fillHeight: true
+                    Rectangle { anchors.centerIn: parent; width: 1; height: 30; color: splitter.containsMouse || splitter.pressed ? Theme.selectionLine : "transparent" }
+                    MouseArea {
+                        id: splitter
+                        objectName: "resultsSplitter"
+                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.SplitHCursor
+                        property real start: 0
+                        property real startWidth: 0
+                        onPressed: function(mouse) { start = mapToItem(workspace, mouse.x, mouse.y).x; startWidth = resultsPanel.width; }
+                        onPositionChanged: function(mouse) { if(pressed) window.preferredListWidth = Math.max(270, Math.min(workspace.width * .44, startWidth + mapToItem(workspace, mouse.x, mouse.y).x - start)); }
+                        onDoubleClicked: window.preferredListWidth = 360
                     }
                 }
-                Column {
-                    anchors.centerIn: parent; width: parent.width - 36; spacing: 13
-                    visible: results.count === 0
-                    Icon { anchors.horizontalCenter: parent.horizontalCenter; name: "search"; width: 30; height: 30; color: Theme.quiet }
-                    Text { width: parent.width; text: client.emptyMessage || (client.pending ? "正在查找…" : "没有找到相关文件"); color: Theme.secondary; font.family: Theme.family; font.pixelSize: 14; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap }
-                    Text { width: parent.width; visible: !client.pending; text: "试试其他描述，或检查搜索范围。"; color: Theme.quiet; font.family: Theme.family; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap }
-                    Column {
-                        anchors.horizontalCenter: parent.horizontalCenter; spacing: 4; visible: !client.pending
-                        DeskButton { objectName: "clearFilterButton"; visible: client.kind.length > 0; text: "搜索全部类型"; compact: true; onClicked: { client.setKind(""); search.forceActiveFocus(); } }
-                        DeskButton { objectName: "searchScopeButton"; text: "检查搜索范围"; compact: true; subtle: true; onClicked: window.openSettings() }
-                    }
+                PreviewPane { id: previewPane; Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 350 }
+            }
+            Column {
+                anchors.centerIn: parent; width: Math.min(480, parent.width - 36); spacing: 13
+                visible: results.count === 0
+                Icon { anchors.horizontalCenter: parent.horizontalCenter; name: "search"; width: 30; height: 30; color: Theme.quiet }
+                Text { width: parent.width; text: client.searchError ? "暂时没有可显示的结果" : client.emptyMessage; textFormat: Text.PlainText; color: Theme.ink; font.family: Theme.family; font.pixelSize: 17; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap }
+                Text { width: parent.width; visible: !client.pending; text: "换个关键词，或确认文件所在的文件夹已加入搜索范围。"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap }
+                Row {
+                    anchors.horizontalCenter: parent.horizontalCenter; spacing: 6; visible: !client.pending
+                    DeskButton { objectName: "clearFilterButton"; visible: client.kind.length > 0; text: "搜索全部类型"; compact: true; onClicked: { client.setKind(""); search.forceActiveFocus(); } }
+                    DeskButton { objectName: "searchScopeButton"; text: "检查搜索范围"; compact: true; subtle: true; onClicked: window.openSettings() }
                 }
             }
-            Item {
-                visible: !window.singleVideo
-                Layout.preferredWidth: 20; Layout.fillHeight: true
-                Rectangle { anchors.centerIn: parent; width: 1; height: 30; color: splitter.containsMouse || splitter.pressed ? Theme.selectionLine : "transparent" }
-                MouseArea {
-                    id: splitter
-                    objectName: "resultsSplitter"
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.SplitHCursor
-                    property real start: 0
-                    property real startWidth: 0
-                    onPressed: function(mouse) { start = mapToItem(workspace, mouse.x, mouse.y).x; startWidth = resultsPanel.width; }
-                    onPositionChanged: function(mouse) { if(pressed) window.preferredListWidth = Math.max(270, Math.min(workspace.width * .44, startWidth + mapToItem(workspace, mouse.x, mouse.y).x - start)); }
-                    onDoubleClicked: window.preferredListWidth = 360
-                }
-            }
-            PreviewPane { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 350 }
         }
 
         Item {
@@ -451,7 +468,7 @@ ApplicationWindow {
                 Text { text: "本地搜索"; color: Theme.secondary; font.family: Theme.family; font.pixelSize: 11 }
                 Text { visible: client.semanticStage.length > 0 && window.browsing; text: "·  " + (client.semanticStage === "quick" ? "快速语义（文字）" : "内容语义"); color: Theme.quiet; font.family: Theme.family; font.pixelSize: 11 }
                 Item { Layout.fillWidth: true }
-                Text { text: window.browsing ? "↑ ↓  选择     Enter  打开     右键  更多     Esc  清空" : "Ctrl K  搜索     ·     文件始终保留在本机"; color: Theme.quiet; font.family: Theme.family; font.pixelSize: 11 }
+                Text { text: !window.browsing ? "文件始终保留在本机" : results.count ? "↑ ↓  选择     Enter  打开     右键  更多     Esc  清空" : "Esc  清空"; color: Theme.quiet; font.family: Theme.family; font.pixelSize: 11 }
             }
         }
     }

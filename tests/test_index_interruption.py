@@ -40,6 +40,21 @@ class IndexInterruptionTests(unittest.TestCase):
         return tuple(self.db.execute('SELECT status,error,fingerprint FROM files WHERE id=?',
                                      (self.fid,)).fetchone())
 
+    def test_scan_excludes_explicit_file_and_directory_but_keeps_similar_prefix(self):
+        hidden = self.root / 'archive'
+        hidden.mkdir()
+        (hidden / 'private.txt').touch()
+        sibling = self.root / 'archive-old'
+        sibling.mkdir()
+        allowed = sibling / 'visible.txt'
+        allowed.touch()
+        skipped = sibling / 'skip.txt'
+        skipped.touch()
+        store.set_setting(self.db, 'exclusions', [str(hidden), str(skipped)])
+        indexer.scan(self.db, self.root)
+        paths = {row[0] for row in self.db.execute('SELECT path FROM files')}
+        self.assertEqual(paths, {str(self.path), str(allowed)})
+
     def test_progressive_interruption_preserves_cursor_and_can_finish(self):
         indexer.index_pending(self.db, file_id=self.fid, limit=1, max_units=2)
         before = self.state()
